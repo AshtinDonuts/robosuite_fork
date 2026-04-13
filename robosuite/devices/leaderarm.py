@@ -604,8 +604,8 @@ class TrossenArmLeaderArm(ROS2LeaderArm):
 
 def main() -> None:
     """
-    Subscribe to a ROS 2 ``JointState`` topic and print leader joint positions
-    and grasp state every 0.5 s (for hardware bring-up).
+    Subscribe to a ROS 2 ``JointState`` topic, step the **Lift** task (default)
+    with **JOINT_POSITION** control, and show a live viewer.
 
     Run from the repo root::
 
@@ -615,8 +615,11 @@ def main() -> None:
     """
     import argparse
     import time
+    from copy import deepcopy
 
-    parser = argparse.ArgumentParser(description="Print leader arm JointState readings periodically.")
+    parser = argparse.ArgumentParser(
+        description="Teleop test: ROS leader arm → Lift (or chosen env) with optional viewer."
+    )
     parser.add_argument(
         "--impl",
         choices=("trossen", "ros2"),
@@ -625,9 +628,39 @@ def main() -> None:
         "ros2: generic ROS2LeaderArm; use --gripper-joint for hardware grasp.",
     )
     parser.add_argument("--topic", type=str, default="/joint_states", help="sensor_msgs/JointState topic")
-    parser.add_argument("--period", type=float, default=0.5, help="Seconds between prints")
+    parser.add_argument("--period", type=float, default=0.5, help="Seconds between diagnostic prints")
     parser.add_argument("--environment", type=str, default="Lift")
-    parser.add_argument("--robot", type=str, default="Panda")
+    parser.add_argument("--robot", type=str, default="UR5e") # Panda
+    parser.add_argument(
+        "--no-render",
+        action="store_true",
+        help="Headless (no on-screen window). Still steps the simulation.",
+    )
+    parser.add_argument(
+        "--renderer",
+        type=str,
+        default="mjviewer",
+        choices=("mjviewer", "mujoco"),
+        help="On-screen backend (mjviewer = native MuJoCo; mujoco = OpenCV window).",
+    )
+    parser.add_argument(
+        "--render-camera",
+        type=str,
+        default="frontview",
+        help="Camera name for the viewer (Lift default scene camera is often frontview or agentview).",
+    )
+    parser.add_argument(
+        "--control-freq",
+        type=int,
+        default=20,
+        help="Simulation stepping rate (Hz) while teleoperating.",
+    )
+    parser.add_argument(
+        "--refactor-arm-names",
+        nargs="+",
+        default=["right"],
+        help="Arm keys when building the composite JOINT_POSITION config (single-arm: right).",
+    )
     parser.add_argument(
         "--gripper-close-threshold",
         type=float,
@@ -643,19 +676,33 @@ def main() -> None:
     args = parser.parse_args()
 
     import robosuite as suite
-    from robosuite.controllers import load_composite_controller_config
+    from robosuite.controllers import load_part_controller_config
+    from robosuite.controllers.composite.composite_controller import WholeBody
+    from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
 
-    controller_config = load_composite_controller_config(robot=args.robot)
+    arm_part_config = load_part_controller_config(default_controller="JOINT_POSITION")
+    controller_config = refactor_composite_controller_config(
+        arm_part_config,
+        args.robot,
+        args.refactor_arm_names,
+    )
+
     env = suite.make(
         args.environment,
         robots=args.robot,
         controller_configs=controller_config,
-        has_renderer=False,
+        has_renderer=not args.no_render,
         has_offscreen_renderer=False,
+        renderer=args.renderer,
+        render_camera=args.render_camera,
         use_camera_obs=False,
         ignore_done=True,
+        control_freq=args.control_freq,
+        reward_shaping=True,
     )
     env.reset()
+    if not args.no_render:
+        env.render()
 
     if args.impl == "trossen":
         device: LeaderArm = TrossenArmLeaderArm(
@@ -673,26 +720,85 @@ def main() -> None:
     device.start_control()
     names: Optional[List[str]] = getattr(device, "joint_names", None)
 
+    def _prev_gripper_actions():
+        return [
+            {
+                f"{robot_arm}_gripper": np.repeat([0], robot.gripper[robot_arm].dof)
+                for robot_arm in robot.arms
+                if robot.gripper[robot_arm].dof > 0
+            }
+            for robot in env.robots
+        ]
+
+    all_prev_gripper_actions = _prev_gripper_actions()
+
     print(
-        f"Listening on {args.topic!r} ({args.impl}); printing every {args.period} s. Ctrl+C to exit.\n"
+        f"Listening on {args.topic!r} ({args.impl}); "
+        f"render={'off' if args.no_render else args.renderer}; "
+        f"prints every {args.period} s. Press q to reset pose. Ctrl+C to exit.\n"
     )
+
+    dt = 1.0 / float(args.control_freq)
+    last_print = time.monotonic()
 
     try:
         while True:
-            state = device.get_controller_state()
-            jp = state["joint_positions"]
-            line_parts = []
-            if names is not None and len(names) == len(jp):
-                line_parts.append(
-                    "joints: "
-                    + ", ".join(f"{n}={v:.4f}" for n, v in zip(names, jp))
-                )
-            else:
-                line_parts.append("joints: " + np.array2string(jp, precision=4, separator=", "))
-            line_parts.append(f"grasp (closed)={state['grasp']}")
-            line_parts.append(f"reset_flag={state['reset']}")
-            print(time.strftime("%H:%M:%S"), "|", " | ".join(line_parts), flush=True)
-            time.sleep(args.period)
+            loop_t0 = time.monotonic()
+            input_ac_dict = device.input2action()
+            if input_ac_dict is None:
+                env.reset()
+                device.start_control()
+                all_prev_gripper_actions = _prev_gripper_actions()
+                if not args.no_render:
+                    env.render()
+                continue
+
+            active_robot_model = env.robots[device.active_robot]
+            action_dict = deepcopy(input_ac_dict)
+            for arm in active_robot_model.arms:
+                if isinstance(active_robot_model.composite_controller, WholeBody):
+                    controller_input_type = active_robot_model.composite_controller.joint_action_policy.input_type
+                else:
+                    controller_input_type = active_robot_model.part_controllers[arm].input_type
+                if controller_input_type == "delta":
+                    action_dict[arm] = input_ac_dict[f"{arm}_delta"]
+                elif controller_input_type == "absolute":
+                    action_dict[arm] = input_ac_dict[f"{arm}_abs"]
+                else:
+                    raise ValueError(f"Unsupported controller input_type: {controller_input_type!r}")
+
+            env_action = [
+                robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)
+            ]
+            env_action[device.active_robot] = active_robot_model.create_action_vector(action_dict)
+            env_action = np.concatenate(env_action)
+            for gripper_ac in all_prev_gripper_actions[device.active_robot]:
+                all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
+
+            env.step(env_action)
+            if not args.no_render:
+                env.render()
+
+            now = time.monotonic()
+            if now - last_print >= args.period:
+                state = device.get_controller_state()
+                jp = state["joint_positions"]
+                line_parts = []
+                if names is not None and len(names) == len(jp):
+                    line_parts.append(
+                        "joints: " + ", ".join(f"{n}={v:.4f}" for n, v in zip(names, jp))
+                    )
+                else:
+                    line_parts.append("joints: " + np.array2string(jp, precision=4, separator=", "))
+                line_parts.append(f"grasp (closed)={state['grasp']}")
+                line_parts.append(f"reset_flag={state['reset']}")
+                print(time.strftime("%H:%M:%S"), "|", " | ".join(line_parts), flush=True)
+                last_print = now
+
+            elapsed = time.monotonic() - loop_t0
+            sleep_t = dt - elapsed
+            if sleep_t > 0:
+                time.sleep(sleep_t)
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
