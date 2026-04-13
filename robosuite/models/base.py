@@ -501,23 +501,27 @@ class MujocoXMLModel(MujocoXML, MujocoModel):
         # Define other variables that get filled later
         self.mount = None
 
-        # Define filter method to automatically add a default name to visual / collision geoms if encountered
-        group_mapping = {
-            None: "col",
-            "0": "col",
-            "1": "vis",
-        }
-        ctr_mapping = {
-            "col": 0,
-            "vis": 0,
-        }
+        # Define filter method to automatically add a default name to geoms if encountered.
+        # MuJoCo allows groups 0 (collision default), 1 (visual), and higher; only0/1 are
+        # classified into contact_geoms / visual_geoms by _element_filter, but other groups
+        # still need stable names when the MJCF omits the name attribute.
+        ctr_mapping = {"col": 0, "vis": 0}
+
+        def _geom_name_label(raw_group):
+            if raw_group in (None, "0"):
+                return "col"
+            if raw_group == "1":
+                return "vis"
+            return f"g{raw_group}"
 
         def _add_default_name_filter(element, parent):
             # Run default filter
             filter_key = _element_filter(element=element, parent=parent)
             # Also additionally modify element if it is (a) a geom and (b) has no name
             if element.tag == "geom" and element.get("name") is None:
-                group = group_mapping[element.get("group")]
+                group = _geom_name_label(element.get("group"))
+                if group not in ctr_mapping:
+                    ctr_mapping[group] = 0
                 element.set("name", f"g{ctr_mapping[group]}_{group}")
                 ctr_mapping[group] += 1
             # Return default filter key

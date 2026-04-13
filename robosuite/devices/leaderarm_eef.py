@@ -630,9 +630,7 @@ def main() -> None:
     parser.add_argument("--topic", type=str, default="/joint_states", help="sensor_msgs/JointState topic")
     parser.add_argument("--period", type=float, default=0.5, help="Seconds between diagnostic prints")
     parser.add_argument("--environment", type=str, default="Lift")
-    #####
-    parser.add_argument("--robot", type=str, default="ViperXAI") # UR5e works
-    #####
+    parser.add_argument("--robot", type=str, default="UR5e") # Panda
     parser.add_argument(
         "--no-render",
         action="store_true",
@@ -688,8 +686,6 @@ def main() -> None:
         args.robot,
         args.refactor_arm_names,
     )
-    # JOINT_POSITION defaults to input_type "delta", which treats actions as normalized [-1, 1] and maps them
-    # to ±output_max rad per step (~0.05). Teleop sends raw joint radians (via right_abs); use absolute goals.
     for arm in args.refactor_arm_names:
         arm_cfg = controller_config.get("body_parts", {}).get(arm)
         if isinstance(arm_cfg, dict) and arm_cfg.get("type") == "JOINT_POSITION":

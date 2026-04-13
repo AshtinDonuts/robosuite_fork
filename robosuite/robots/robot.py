@@ -114,6 +114,7 @@ class Robot(object):
         )
 
         self.init_qpos = initial_qpos  # n-dim list / array of robot joints
+        self._gripper_split_init_qpos = None  # optional np.array from robot models with combined arm+gripper init
         self.init_torso_qpos = None
 
         self.robot_joints = None  # xml joint names for robot
@@ -173,8 +174,12 @@ class Robot(object):
         self.robot_model.update_joints()
         self.robot_model.update_actuators()
         # Use default from robot model for initial joint positions if not specified
-        if self.init_qpos is None:
-            self.init_qpos = self.robot_model.init_qpos
+        raw_init = self.robot_model.init_qpos if self.init_qpos is None else np.asarray(self.init_qpos, dtype=float)
+        self._gripper_split_init_qpos = None
+        if hasattr(self.robot_model, "split_init_qpos"):
+            self.init_qpos, self._gripper_split_init_qpos = self.robot_model.split_init_qpos(raw_init)
+        else:
+            self.init_qpos = raw_init
 
         # Now, load the gripper if necessary
         for arm in self.arms:
@@ -283,8 +288,15 @@ class Robot(object):
         for arm in self.arms:
             # Now, reset the grippers if necessary
             if self.has_gripper[arm]:
-                if not deterministic:
-                    self.sim.data.qpos[self._ref_gripper_joint_pos_indexes[arm]] = self.gripper[arm].init_qpos
+                split_gq = getattr(self, "_gripper_split_init_qpos", None)
+                if split_gq is not None:
+                    gq = np.asarray(split_gq, dtype=float)
+                elif not deterministic:
+                    gq = self.gripper[arm].init_qpos
+                else:
+                    gq = None
+                if gq is not None:
+                    self.sim.data.qpos[self._ref_gripper_joint_pos_indexes[arm]] = gq
 
                 self.gripper[arm].current_action = np.zeros(self.gripper[arm].dof)
 
