@@ -17,7 +17,9 @@ import numpy as np
 
 import robosuite as suite
 from robosuite.controllers import load_composite_controller_config
+from robosuite.controllers.parts.controller_factory import load_part_controller_config
 from robosuite.controllers.composite.composite_controller import WholeBody
+from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
 from robosuite.wrappers import DataCollectionWrapper, VisualizationWrapper
 
 
@@ -343,13 +345,62 @@ if __name__ == "__main__":
         default=0.95,
         help="Clamp leader targets within this fraction of each joint range (0–1).",
     )
+    parser.add_argument(
+        "--leaderarm-teleop-scale-shoulder",
+        type=float,
+        default=None,
+        help="Per-joint gain for shoulder (joint index 1) applied before sim-limit clamping. "
+        "Defaults to 1.12 when --robots contains VX300S, else 1.0.",
+    )
+    parser.add_argument(
+        "--leaderarm-teleop-scale-elbow",
+        type=float,
+        default=None,
+        help="Per-joint gain for elbow (joint index 2) applied before sim-limit clamping. "
+        "Defaults to 1.12 when --robots contains VX300S, else 1.0.",
+    )
+    parser.add_argument(
+        "--leaderarm-teleop-scale-pivot",
+        type=float,
+        nargs=6,
+        metavar=("waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"),
+        default=None,
+        help="Optional 6-element pivot (rad) for the per-joint affine scaling map "
+        "(q_sim = pivot + scale * (q_leader - pivot)). "
+        "Set to the hardware home pose to expand motion relative to that configuration.",
+    )
     args = parser.parse_args()
 
-    # Get controller config
-    controller_config = load_composite_controller_config(
-        controller=args.controller,
-        robot=args.robots[0],
-    )
+    _is_leaderarm_device = args.device in ("trossen_leaderarm", "ros2_leaderarm")
+
+    # VX300S shoulder/elbow joints have a different mechanical range than the
+    # hardware encoder range; a gain of 1.12 compensates for this by default.
+    _primary_robot = args.robots[0] if isinstance(args.robots, list) else args.robots
+    _is_vx300s = _primary_robot.upper() in ("VX300S",)
+    _default_scale = 1.12 if _is_vx300s else 1.0
+    if args.leaderarm_teleop_scale_shoulder is None:
+        args.leaderarm_teleop_scale_shoulder = _default_scale
+    if args.leaderarm_teleop_scale_elbow is None:
+        args.leaderarm_teleop_scale_elbow = _default_scale
+
+    # Get controller config.
+    # LeaderArm requires JOINT_POSITION (a part controller), which cannot be
+    # passed directly to load_composite_controller_config.  Instead, build it
+    # the same way leaderarm.py does: load the part config then wrap it in a
+    # composite config via refactor_composite_controller_config.
+    if _is_leaderarm_device and args.controller in (None, "JOINT_POSITION"):
+        _arm_part_cfg = load_part_controller_config(default_controller="JOINT_POSITION")
+        _arm_part_cfg["input_type"] = "absolute"  # LeaderArm sends absolute joint targets
+        controller_config = refactor_composite_controller_config(
+            _arm_part_cfg,
+            _primary_robot,
+            ["right"],  # VX300S (and most single-arm robots) use "right"
+        )
+    else:
+        controller_config = load_composite_controller_config(
+            controller=args.controller,
+            robot=_primary_robot,
+        )
 
     if controller_config["type"] == "WHOLE_BODY_MINK_IK":
         # mink-speicific import. requires installing mink
@@ -425,49 +476,51 @@ if __name__ == "__main__":
         from robosuite.devices.mjgui import MJGUI
 
         device = MJGUI(env=env)
-    elif args.device == "trossen_leaderarm":
-        try:
-            from robosuite.devices import TrossenArmLeaderArm
-        except ImportError as exc:
-            raise ImportError(
-                "trossen_leaderarm requires ROS 2 packages (rclpy, sensor_msgs). "
-                "Source your ROS 2 workspace and install dependencies."
-            ) from exc
-        _trossen_kw = dict(
+    elif args.device in ("trossen_leaderarm", "ros2_leaderarm"):
+        # Build the per-joint scale array [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate].
+        _teleop_scale = np.array(
+            [1.0, args.leaderarm_teleop_scale_shoulder, args.leaderarm_teleop_scale_elbow, 1.0, 1.0, 1.0],
+            dtype=float,
+        )
+        _leaderarm_common_kw = dict(
             env=env,
             topic=args.leaderarm_topic,
             joint_sensitivity=args.leaderarm_joint_sensitivity,
             joint_limits_safety_factor=args.leaderarm_joint_limits_safety_factor,
             gripper_close_threshold=args.leaderarm_gripper_close_threshold,
+            leader_joint_scale=_teleop_scale,
         )
+        if args.leaderarm_teleop_scale_pivot is not None:
+            _leaderarm_common_kw["leader_joint_scale_pivot"] = tuple(args.leaderarm_teleop_scale_pivot)
         if args.leaderarm_node_name is not None:
-            _trossen_kw["node_name"] = args.leaderarm_node_name
-        device = TrossenArmLeaderArm(**_trossen_kw)
-    elif args.device == "ros2_leaderarm":
-        try:
-            from robosuite.devices import ROS2LeaderArm
-        except ImportError as exc:
-            raise ImportError(
-                "ros2_leaderarm requires ROS 2 packages (rclpy, sensor_msgs). "
-                "Source your ROS 2 workspace and install dependencies."
-            ) from exc
-        _ros2_kw = dict(
-            env=env,
-            topic=args.leaderarm_topic,
-            joint_sensitivity=args.leaderarm_joint_sensitivity,
-            joint_limits_safety_factor=args.leaderarm_joint_limits_safety_factor,
-            gripper_joint=args.leaderarm_gripper_joint,
-            gripper_close_threshold=args.leaderarm_gripper_close_threshold,
-        )
-        if args.leaderarm_node_name is not None:
-            _ros2_kw["node_name"] = args.leaderarm_node_name
-        if args.leaderarm_joint_names is not None and len(args.leaderarm_joint_names) > 0:
-            _ros2_kw["joint_names"] = list(args.leaderarm_joint_names)
-        device = ROS2LeaderArm(**_ros2_kw)
+            _leaderarm_common_kw["node_name"] = args.leaderarm_node_name
+
+        if args.device == "trossen_leaderarm":
+            try:
+                from robosuite.devices import TrossenArmLeaderArm
+            except ImportError as exc:
+                raise ImportError(
+                    "trossen_leaderarm requires ROS 2 packages (rclpy, sensor_msgs). "
+                    "Source your ROS 2 workspace and install dependencies."
+                ) from exc
+            device = TrossenArmLeaderArm(**_leaderarm_common_kw)
+        else:  # ros2_leaderarm
+            try:
+                from robosuite.devices import ROS2LeaderArm
+            except ImportError as exc:
+                raise ImportError(
+                    "ros2_leaderarm requires ROS 2 packages (rclpy, sensor_msgs). "
+                    "Source your ROS 2 workspace and install dependencies."
+                ) from exc
+            _ros2_kw = dict(**_leaderarm_common_kw, gripper_joint=args.leaderarm_gripper_joint)
+            if args.leaderarm_joint_names is not None and len(args.leaderarm_joint_names) > 0:
+                _ros2_kw["joint_names"] = list(args.leaderarm_joint_names)
+            device = ROS2LeaderArm(**_ros2_kw)
     else:
         raise Exception(
             "Invalid device. Choose keyboard, spacemouse, dualsense, mjgui, "
-            "trossen_leaderarm, or ros2_leaderarm."
+            "trossen_leaderarm, or ros2_leaderarm. "
+            f"Got: {args.device!r}"
         )
 
     # make a new timestamped directory
