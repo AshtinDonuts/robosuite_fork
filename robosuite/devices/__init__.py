@@ -1,5 +1,6 @@
 from .device import Device
 from .keyboard import Keyboard
+from .leaderarm import LeaderArm
 
 try:
     from .spacemouse import SpaceMouse
@@ -11,3 +12,8 @@ except ImportError as e:
            Only macOS is officially supported. Install the additional\n
            requirements with `pip install -r requirements-extra.txt`"""
     )
+
+try:
+    from .leaderarm import ROS2LeaderArm, TrossenArmLeaderArm
+except ImportError:
+    pass

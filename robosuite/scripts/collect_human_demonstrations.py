@@ -6,6 +6,7 @@ The demonstrations can be played back using the `playback_demonstrations_from_hd
 
 import argparse
 import datetime
+import inspect
 import json
 import os
 import time
@@ -18,6 +19,13 @@ import robosuite as suite
 from robosuite.controllers import load_composite_controller_config
 from robosuite.controllers.composite.composite_controller import WholeBody
 from robosuite.wrappers import DataCollectionWrapper, VisualizationWrapper
+
+
+def _device_input2action(device, goal_update_mode):
+    """Call device.input2action; LeaderArm omits goal_update_mode (joint-space only)."""
+    if "goal_update_mode" in inspect.signature(device.input2action).parameters:
+        return device.input2action(goal_update_mode=goal_update_mode)
+    return device.input2action()
 
 
 def collect_human_trajectory(env, device, arm, max_fr, goal_update_mode):
@@ -60,7 +68,7 @@ def collect_human_trajectory(env, device, arm, max_fr, goal_update_mode):
         active_robot = env.robots[device.active_robot]
 
         # Get the newest action
-        input_ac_dict = device.input2action(goal_update_mode=goal_update_mode)
+        input_ac_dict = _device_input2action(device, goal_update_mode)
 
         # If action is none, then this a reset so we should break
         if input_ac_dict is None:
@@ -248,7 +256,12 @@ if __name__ == "__main__":
         default=None,
         help="Choice of controller. Can be generic (eg. 'BASIC' or 'WHOLE_BODY_MINK_IK') or json file (see robosuite/controllers/config for examples)",
     )
-    parser.add_argument("--device", type=str, default="keyboard")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="keyboard",
+        help="keyboard | spacemouse | dualsense | mjgui | trossen_leaderarm | ros2_leaderarm",
+    )
     parser.add_argument(
         "--pos-sensitivity",
         type=float,
@@ -287,6 +300,48 @@ if __name__ == "__main__":
         help="Used by the device to get the arm's actions. The mode to update the goal in. Can be 'target' or 'achieved'. If 'target', the goal is updated based on the current target pose. "
         "If 'achieved', the goal is updated based on the current achieved state. "
         "We recommend using 'achieved' (and input_ref_frame='base') if collecting demonstrations with a mobile base robot.",
+    )
+    parser.add_argument(
+        "--leaderarm-topic",
+        type=str,
+        default="/joint_states",
+        help="ROS 2 JointState topic for trossen_leaderarm / ros2_leaderarm.",
+    )
+    parser.add_argument(
+        "--leaderarm-node-name",
+        type=str,
+        default=None,
+        help="ROS 2 node name (default: implementation-specific).",
+    )
+    parser.add_argument(
+        "--leaderarm-joint-names",
+        nargs="*",
+        default=None,
+        help="Ordered joint names for ros2_leaderarm (default: ROS2LeaderArm built-in list). Ignored for trossen_leaderarm.",
+    )
+    parser.add_argument(
+        "--leaderarm-gripper-joint",
+        type=str,
+        default=None,
+        help="Optional joint name on JointState to infer grasp (ros2_leaderarm). Uses keyboard gripper toggle when omitted.",
+    )
+    parser.add_argument(
+        "--leaderarm-gripper-close-threshold",
+        type=float,
+        default=0.0,
+        help="Grasp closed when gripper joint position is below this (rad), if --leaderarm-gripper-joint is set.",
+    )
+    parser.add_argument(
+        "--leaderarm-joint-sensitivity",
+        type=float,
+        default=1.0,
+        help="Scales joint deltas from the leader arm (trossen_leaderarm / ros2_leaderarm).",
+    )
+    parser.add_argument(
+        "--leaderarm-joint-limits-safety-factor",
+        type=float,
+        default=0.95,
+        help="Clamp leader targets within this fraction of each joint range (0–1).",
     )
     args = parser.parse_args()
 
@@ -364,13 +419,56 @@ if __name__ == "__main__":
             rot_sensitivity=args.rot_sensitivity,
             reverse_xy=args.reverse_xy,
         )
+    ##
     elif args.device == "mjgui":
         assert args.renderer == "mjviewer", "Mocap is only supported with the mjviewer renderer"
         from robosuite.devices.mjgui import MJGUI
 
         device = MJGUI(env=env)
+    elif args.device == "trossen_leaderarm":
+        try:
+            from robosuite.devices import TrossenArmLeaderArm
+        except ImportError as exc:
+            raise ImportError(
+                "trossen_leaderarm requires ROS 2 packages (rclpy, sensor_msgs). "
+                "Source your ROS 2 workspace and install dependencies."
+            ) from exc
+        _trossen_kw = dict(
+            env=env,
+            topic=args.leaderarm_topic,
+            joint_sensitivity=args.leaderarm_joint_sensitivity,
+            joint_limits_safety_factor=args.leaderarm_joint_limits_safety_factor,
+            gripper_close_threshold=args.leaderarm_gripper_close_threshold,
+        )
+        if args.leaderarm_node_name is not None:
+            _trossen_kw["node_name"] = args.leaderarm_node_name
+        device = TrossenArmLeaderArm(**_trossen_kw)
+    elif args.device == "ros2_leaderarm":
+        try:
+            from robosuite.devices import ROS2LeaderArm
+        except ImportError as exc:
+            raise ImportError(
+                "ros2_leaderarm requires ROS 2 packages (rclpy, sensor_msgs). "
+                "Source your ROS 2 workspace and install dependencies."
+            ) from exc
+        _ros2_kw = dict(
+            env=env,
+            topic=args.leaderarm_topic,
+            joint_sensitivity=args.leaderarm_joint_sensitivity,
+            joint_limits_safety_factor=args.leaderarm_joint_limits_safety_factor,
+            gripper_joint=args.leaderarm_gripper_joint,
+            gripper_close_threshold=args.leaderarm_gripper_close_threshold,
+        )
+        if args.leaderarm_node_name is not None:
+            _ros2_kw["node_name"] = args.leaderarm_node_name
+        if args.leaderarm_joint_names is not None and len(args.leaderarm_joint_names) > 0:
+            _ros2_kw["joint_names"] = list(args.leaderarm_joint_names)
+        device = ROS2LeaderArm(**_ros2_kw)
     else:
-        raise Exception("Invalid device choice: choose either 'keyboard' or 'spacemouse'.")
+        raise Exception(
+            "Invalid device. Choose keyboard, spacemouse, dualsense, mjgui, "
+            "trossen_leaderarm, or ros2_leaderarm."
+        )
 
     # make a new timestamped directory
     t1, t2 = str(time.time()).split(".")
