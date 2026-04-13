@@ -39,7 +39,7 @@ hardware ``left_finger`` position published on the JointState topic.
 
 import abc
 import threading
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 from pynput.keyboard import Key, Listener
@@ -79,6 +79,12 @@ class LeaderArm:
             range (0–1).  The leader positions are clamped so they stay within
             ``factor * range / 2`` of the joint-limit centre.  Set to 1.0 to
             use the full range.
+        leader_joint_scale (sequence of float, optional): Per-joint gain applied
+            before sim limit clamping: ``q' = pivot + scale * (q - pivot)``.
+            Length must match arm DOF. ``None`` means all ones.
+        leader_joint_scale_pivot (sequence of float, optional): Pivot for the
+            affine map above (same length as ``leader_joint_scale``).  ``None``
+            means all zeros (pure gain vs zero pose).
     """
 
     def __init__(
@@ -86,10 +92,18 @@ class LeaderArm:
         env,
         joint_sensitivity: float = 1.0,
         joint_limits_safety_factor: float = 0.95,
+        leader_joint_scale: Optional[Sequence[float]] = None,
+        leader_joint_scale_pivot: Optional[Sequence[float]] = None,
     ):
         self.env = env
         self.joint_sensitivity = joint_sensitivity
         self.joint_limits_safety_factor = joint_limits_safety_factor
+        self._leader_joint_scale: Optional[np.ndarray] = (
+            None if leader_joint_scale is None else np.asarray(leader_joint_scale, dtype=float)
+        )
+        self._leader_joint_scale_pivot: Optional[np.ndarray] = (
+            None if leader_joint_scale_pivot is None else np.asarray(leader_joint_scale_pivot, dtype=float)
+        )
 
         self._reset_state: int = 0
         self._enabled: bool = False
@@ -325,6 +339,17 @@ class LeaderArm:
         """
         controller = robot.part_controllers[arm]
         target = np.array(leader_qpos, dtype=float)
+
+        if self._leader_joint_scale is not None or self._leader_joint_scale_pivot is not None:
+            n = target.size
+            scale = np.ones(n, dtype=float) if self._leader_joint_scale is None else self._leader_joint_scale
+            pivot = np.zeros(n, dtype=float) if self._leader_joint_scale_pivot is None else self._leader_joint_scale_pivot
+            if scale.shape != (n,) or pivot.shape != (n,):
+                raise ValueError(
+                    f"leader_joint_scale / pivot must have shape ({n},); "
+                    f"got scale {scale.shape}, pivot {pivot.shape}"
+                )
+            target = pivot + scale * (target - pivot)
 
         jnt_range = robot.sim.model.jnt_range[controller.joint_indexes["joints"]]
         lo = jnt_range[:, 0]
@@ -609,7 +634,12 @@ def main() -> None:
 
     Run from the repo root::
 
-        python -m robosuite.devices.leaderarm --topic /your/joint_states
+        python -m robosuite.devices.leaderarm --topic /leader_solo/joint_states
+
+    Arm commands use **absolute** joint goals by default: leader joint angles
+    (rad) from ``JointState`` are clamped to sim limits and passed as
+    ``{arm}_abs`` to ``JOINT_POSITION``. Use ``--arm-input-type delta`` for
+    per-step ``{arm}_delta`` (scaled by :attr:`LeaderArm.joint_sensitivity`).
 
     Requires ``rclpy``, ``sensor_msgs``, and a running publisher on the topic.
     """
@@ -631,7 +661,7 @@ def main() -> None:
     parser.add_argument("--period", type=float, default=0.5, help="Seconds between diagnostic prints")
     parser.add_argument("--environment", type=str, default="Lift")
     #####
-    parser.add_argument("--robot", type=str, default="ViperXAI") # UR5e works
+    parser.add_argument("--robot", type=str, default="VX300S") # UR5e, ViperXAI
     #####
     parser.add_argument(
         "--no-render",
@@ -664,6 +694,13 @@ def main() -> None:
         help="Arm keys when building the composite JOINT_POSITION config (single-arm: right).",
     )
     parser.add_argument(
+        "--arm-input-type",
+        choices=("absolute", "delta"),
+        default="absolute",
+        help="JOINT_POSITION mode: absolute = leader angles (rad) as goals via {arm}_abs; "
+        "delta = per-step {arm}_delta (scaled by LeaderArm joint_sensitivity, default 1.0).",
+    )
+    parser.add_argument(
         "--gripper-close-threshold",
         type=float,
         default=0.0,
@@ -675,7 +712,34 @@ def main() -> None:
         default=None,
         help="(ros2 only) Joint name for grasp; omit to use keyboard spacebar toggle for grasp.",
     )
+    parser.add_argument(
+        "--teleop-scale-shoulder",
+        type=float,
+        default=None,
+        help="Gain on shoulder (arm joint index 1) before sim clamp: q_sim = pivot + scale*(q_leader-pivot). "
+        "Default: 1.12 if --robot VX300S, else 1.0.",
+    )
+    parser.add_argument(
+        "--teleop-scale-elbow",
+        type=float,
+        default=None,
+        help="Gain on elbow (arm joint index 2). Default: same rule as --teleop-scale-shoulder.",
+    )
+    parser.add_argument(
+        "--teleop-scale-pivot",
+        type=float,
+        nargs=6,
+        metavar=("w", "sh", "el", "fr", "wa", "wr"),
+        default=None,
+        help="Optional pivot (rad) for all6 arm joints; default pivot0. "
+        "Use e.g. hardware home pose so scaling expands motion about that configuration.",
+    )
     args = parser.parse_args()
+
+    if args.teleop_scale_shoulder is None:
+        args.teleop_scale_shoulder = 1.12 if args.robot == "VX300S" else 1.0
+    if args.teleop_scale_elbow is None:
+        args.teleop_scale_elbow = 1.12 if args.robot == "VX300S" else 1.0
 
     import robosuite as suite
     from robosuite.controllers import load_part_controller_config
@@ -688,12 +752,11 @@ def main() -> None:
         args.robot,
         args.refactor_arm_names,
     )
-    # JOINT_POSITION defaults to input_type "delta", which treats actions as normalized [-1, 1] and maps them
-    # to ±output_max rad per step (~0.05). Teleop sends raw joint radians (via right_abs); use absolute goals.
+    # JOINT_POSITION defaults to input_type "delta" in the part config; teleop matches --arm-input-type.
     for arm in args.refactor_arm_names:
         arm_cfg = controller_config.get("body_parts", {}).get(arm)
         if isinstance(arm_cfg, dict) and arm_cfg.get("type") == "JOINT_POSITION":
-            arm_cfg["input_type"] = "absolute"
+            arm_cfg["input_type"] = args.arm_input_type
 
     env = suite.make(
         args.environment,
@@ -712,14 +775,32 @@ def main() -> None:
     if not args.no_render:
         env.render()
 
+    teleop_scale = np.array(
+        [
+            1.0,
+            args.teleop_scale_shoulder,
+            args.teleop_scale_elbow,
+            1.0,
+            1.0,
+            1.0,
+        ],
+        dtype=float,
+    )
+    teleop_kw: Dict = {
+        "leader_joint_scale": teleop_scale,
+    }
+    if args.teleop_scale_pivot is not None:
+        teleop_kw["leader_joint_scale_pivot"] = tuple(args.teleop_scale_pivot)
+
     if args.impl == "trossen":
         device: LeaderArm = TrossenArmLeaderArm(
             env,
             topic=args.topic,
             gripper_close_threshold=args.gripper_close_threshold,
+            **teleop_kw,
         )
     else:
-        ros2_kw: Dict = dict(env=env, topic=args.topic)
+        ros2_kw: Dict = dict(env=env, topic=args.topic, **teleop_kw)
         if args.gripper_joint:
             ros2_kw["gripper_joint"] = args.gripper_joint
             ros2_kw["gripper_close_threshold"] = args.gripper_close_threshold
@@ -742,6 +823,8 @@ def main() -> None:
 
     print(
         f"Listening on {args.topic!r} ({args.impl}); "
+        f"arm_input_type={args.arm_input_type!r}; "
+        f"teleop_scale shoulder={args.teleop_scale_shoulder} elbow={args.teleop_scale_elbow}; "
         f"render={'off' if args.no_render else args.renderer}; "
         f"prints every {args.period} s. Press q to reset pose. Ctrl+C to exit.\n"
     )

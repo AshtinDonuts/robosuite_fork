@@ -11,3 +11,4 @@ from .tiago_robot import Tiago
 from .gr1_robot import GR1, GR1FixedLowerBody, GR1ArmsOnly, GR1FloatingBody
 from .xarm7_robot import XArm7
 from .viper_xai_robot import ViperXAI
+from .vx300s_robot import VX300S

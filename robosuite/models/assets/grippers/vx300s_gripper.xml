@@ -1,0 +1,38 @@
+<?xml version="1.0" ?>
+<!-- Integrated parallel jaw gripper for the Trossen ViperX 300 (vx300s).
+     The finger joints live in the arm MJCF (robot.xml); this model adds the
+     robosuite EEF frame, force/torque sensors, and the position actuator that
+     drives left_finger (right_finger is coupled via an equality constraint). -->
+<mujoco model="vx300s_hand">
+  <!-- left_finger joint lives on the arm MJCF; VX300SGripper.__init__ rewrites
+       the joint attribute to include the robot-id prefix at load time. -->
+  <actuator>
+    <position name="left_gripper" joint="left_finger"
+      kp="300" kv="20" ctrlrange="0.021 0.057" forcerange="-100 100"/>
+  </actuator>
+
+  <worldbody>
+    <body name="right_gripper" pos="0 0 0" quat="1 0 0 0">
+      <site name="ft_frame" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 1"
+        type="sphere" group="1"/>
+      <inertial pos="0 0 0" mass="1e-3" diaginertia="1e-6 1e-6 1e-6"/>
+      <body name="eef" pos="0 0 0" quat="0.707105 0 0 -0.707105">
+        <site name="grip_site" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 0.5"
+          type="sphere" group="1"/>
+        <site name="ee_x" pos="0.1 0 0" size="0.005 .1" quat="0.707105 0 0.707108 0"
+          rgba="1 0 0 0" type="cylinder" group="1"/>
+        <site name="ee_y" pos="0 0.1 0" size="0.005 .1" quat="0.707105 0.707108 0 0"
+          rgba="0 1 0 0" type="cylinder" group="1"/>
+        <site name="ee_z" pos="0 0 0.1" size="0.005 .1" quat="1 0 0 0"
+          rgba="0 0 1 0" type="cylinder" group="1"/>
+        <site name="grip_site_cylinder" pos="0 0 0" size="0.005 10" rgba="0 1 0 0.3"
+          type="cylinder" group="1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <force  name="force_ee"  site="ft_frame"/>
+    <torque name="torque_ee" site="ft_frame"/>
+  </sensor>
+</mujoco>
