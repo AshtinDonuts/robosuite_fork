@@ -758,8 +758,10 @@ def main() -> None:
         if isinstance(arm_cfg, dict) and arm_cfg.get("type") == "JOINT_POSITION":
             arm_cfg["input_type"] = args.arm_input_type
 
-    env = suite.make(
-        args.environment,
+    # Match Wipe-style table: closer in +x and higher top (see manipulation/wipe.py DEFAULT_WIPE_CONFIG).
+    _lift_table_full_size = (0.5, 0.8, 0.05)
+    _lift_table_offset = (0.03, 0.0, 1.0)
+    make_kwargs = dict(
         robots=args.robot,
         controller_configs=controller_config,
         has_renderer=not args.no_render,
@@ -771,6 +773,11 @@ def main() -> None:
         control_freq=args.control_freq,
         reward_shaping=True,
     )
+    if args.environment == "Lift":
+        make_kwargs["table_full_size"] = _lift_table_full_size
+        make_kwargs["table_offset"] = _lift_table_offset
+
+    env = suite.make(args.environment, **make_kwargs)
     env.reset()
     if not args.no_render:
         env.render()

@@ -61,6 +61,8 @@ class Lift(ManipulationEnv):
         table_friction (3-tuple): the three mujoco friction parameters for
             the table.
 
+        table_offset (3-tuple): (x, y, z) offset for `TableArena` placement; z sets the tabletop height.
+
         use_camera_obs (bool): if True, every observation includes rendered image(s)
 
         use_object_obs (bool): if True, include object (cube) information in
@@ -150,8 +152,9 @@ class Lift(ManipulationEnv):
         gripper_types="default",
         base_types="default",
         initialization_noise="default",
-        table_full_size=(0.8, 0.8, 0.05),
+        table_full_size=(0.5, 0.8, 0.05),
         table_friction=(1.0, 5e-3, 1e-4),
+        table_offset=(0.15, 0.0, 0.9),
         use_camera_obs=True,
         use_object_obs=True,
         reward_scale=1.0,
@@ -180,7 +183,7 @@ class Lift(ManipulationEnv):
         # settings for table top
         self.table_full_size = table_full_size
         self.table_friction = table_friction
-        self.table_offset = np.array((0, 0, 0.8))
+        self.table_offset = np.array(table_offset, dtype=float)
 
         # reward configuration
         self.reward_scale = reward_scale
