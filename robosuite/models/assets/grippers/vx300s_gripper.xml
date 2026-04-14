@@ -16,7 +16,10 @@
       <site name="ft_frame" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 1"
         type="sphere" group="1"/>
       <inertial pos="0 0 0" mass="1e-3" diaginertia="1e-6 1e-6 1e-6"/>
-      <body name="eef" pos="0 0 0" quat="0.707105 0 0 -0.707105">
+      <!-- EEF Z must match ViperX approach (+X of gripper_link / right_hand). The Panda-style
+           quat (0.707105 0 0 -0.707105) leaves Z aligned with parent Z, so grip_site_cylinder
+           pointed "up" instead of along the fingers. +90° about Y maps local Z -> parent +X. -->
+      <body name="eef" pos="0 0 0" quat="0.707105 0 0.707108 0">
         <site name="grip_site" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 0.5"
           type="sphere" group="1"/>
         <site name="ee_x" pos="0.1 0 0" size="0.005 .1" quat="0.707105 0 0.707108 0"

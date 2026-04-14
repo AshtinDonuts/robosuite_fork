@@ -123,8 +123,8 @@ def collect_human_trajectory(env, device, arm, max_fr, goal_update_mode):
             if diff > 0:
                 time.sleep(diff)
 
-    # cleanup for end of data collection episodes
-    env.close()
+    # Do not call env.close() here: this function is invoked in a loop; closing would
+    # destroy the MuJoCo sim and viewer and break the next episode (and ROS leader arms).
 
 
 def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
@@ -473,6 +473,12 @@ if __name__ == "__main__":
     tmp_directory = "/tmp/{}".format(str(time.time()).replace(".", "_"))
     env = DataCollectionWrapper(env, tmp_directory)
 
+    # Match robosuite.devices.leaderarm main(): run one reset before starting the ROS
+    # subscriber so JointState callbacks attach to the same sim/robot layout as teleop.
+    if args.device in ("trossen_leaderarm", "ros2_leaderarm"):
+        env.reset()
+        env.render()
+
     # initialize device
     if args.device == "keyboard":
         from robosuite.devices import Keyboard
@@ -558,6 +564,12 @@ if __name__ == "__main__":
     os.makedirs(new_dir)
 
     # collect demonstrations
-    while True:
-        collect_human_trajectory(env, device, args.arm, args.max_fr, args.goal_update_mode)
-        gather_demonstrations_as_hdf5(tmp_directory, new_dir, env_info)
+    try:
+        while True:
+            collect_human_trajectory(env, device, args.arm, args.max_fr, args.goal_update_mode)
+            gather_demonstrations_as_hdf5(tmp_directory, new_dir, env_info)
+    finally:
+        device_closer = getattr(device, "close", None)
+        if device_closer is not None:
+            device_closer()
+        env.close()
