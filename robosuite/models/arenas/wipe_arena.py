@@ -19,6 +19,9 @@ class WipeArena(TableArena):
         table_friction_std (float): Standard deviation to sample for the peg friction
         line_width (float): Diameter of dirt path trace
         two_clusters (bool): If set, will generate two separate dirt paths with half the number of sensors in each
+        dirt_x_upper_margin (float): Pulls dirt toward the robot (-x in the table frame; standard arms mount at
+            negative x). The allowed x interval is ``[-x_half, x_half - 2*margin]``, so the **center** of the uniform
+            band moves by ``-margin`` (not ``-margin/2``). Set to 0 for symmetric ``[-x_half, x_half]``.
     """
 
     def __init__(
@@ -31,6 +34,7 @@ class WipeArena(TableArena):
         table_friction_std=0,
         line_width=0.02,
         two_clusters=False,
+        dirt_x_upper_margin=0.08,
         rng=None,
     ):
         if rng is None:
@@ -43,6 +47,7 @@ class WipeArena(TableArena):
         self.coverage_factor = coverage_factor
         self.num_markers = num_markers
         self.two_clusters = two_clusters
+        self.dirt_x_upper_margin = max(0.0, float(dirt_x_upper_margin))
 
         # Attribute to hold current direction of sampled dirt path
         self.direction = None
@@ -53,6 +58,22 @@ class WipeArena(TableArena):
             table_friction=table_friction,
             table_offset=table_offset,
         )
+
+    def _dirt_xy_limits(self):
+        """
+        Valid (x, y) bounds for dirt centers in the **table body** frame. Y stays symmetric. For X, only the +x
+        (far / opposite-robot) side is shortened: ``x_max = x_half - 2*margin`` so the midpoint ``(x_min+x_max)/2``
+        shifts by ``-margin`` toward the robot (-x). Using ``2*margin`` fixes the earlier bug where trimming ``x_max``
+        by ``margin`` only moved the uniform mean by ``-margin/2``.
+        """
+        x_half = self.table_half_size[0] * self.coverage_factor - self.line_width / 2
+        y_half = self.table_half_size[1] * self.coverage_factor - self.line_width / 2
+        x_min = -x_half
+        m = self.dirt_x_upper_margin
+        x_max = x_half - 2.0 * m
+        if x_max < x_min:
+            x_max = x_min
+        return x_min, x_max, -y_half, y_half
 
     def configure_location(self):
         """Configures correct locations for this arena"""
@@ -147,16 +168,11 @@ class WipeArena(TableArena):
         # First define the random direction that we will start at
         self.direction = self.rng.uniform(-np.pi, np.pi)
 
+        x_min, x_max, y_min, y_max = self._dirt_xy_limits()
         return np.array(
             (
-                self.rng.uniform(
-                    -self.table_half_size[0] * self.coverage_factor + self.line_width / 2,
-                    self.table_half_size[0] * self.coverage_factor - self.line_width / 2,
-                ),
-                self.rng.uniform(
-                    -self.table_half_size[1] * self.coverage_factor + self.line_width / 2,
-                    self.table_half_size[1] * self.coverage_factor - self.line_width / 2,
-                ),
+                self.rng.uniform(x_min, x_max),
+                self.rng.uniform(y_min, y_max),
             )
         )
 
@@ -178,11 +194,9 @@ class WipeArena(TableArena):
         posnew0 = pos[0] + 0.005 * np.sin(self.direction)
         posnew1 = pos[1] + 0.005 * np.cos(self.direction)
 
+        x_min, x_max, y_min, y_max = self._dirt_xy_limits()
         # We keep resampling until we get a valid new position that's on the table
-        while (
-            abs(posnew0) >= self.table_half_size[0] * self.coverage_factor - self.line_width / 2
-            or abs(posnew1) >= self.table_half_size[1] * self.coverage_factor - self.line_width / 2
-        ):
+        while posnew0 < x_min or posnew0 > x_max or posnew1 < y_min or posnew1 > y_max:
             self.direction += self.rng.normal(0, 0.5)
             posnew0 = pos[0] + 0.005 * np.sin(self.direction)
             posnew1 = pos[1] + 0.005 * np.cos(self.direction)
