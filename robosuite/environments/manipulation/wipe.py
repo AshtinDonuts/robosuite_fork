@@ -1,5 +1,6 @@
 import multiprocessing
 from collections import OrderedDict
+from copy import deepcopy
 
 import numpy as np
 
@@ -61,9 +62,8 @@ class Wipe(ManipulationEnv):
             "robots" param
 
         gripper_types (str or list of str): type of gripper, used to instantiate
-            gripper models from gripper factory.
-            For this environment, setting a value other than the default ("WipingGripper") will raise an
-            AssertionError, as this environment is not meant to be used with any other alternative gripper.
+            gripper models from gripper factory. Must be ``WipingGripper`` or ``WipingGripperVX300S``.
+            For ``VX300S``, ``WipingGripper`` is automatically replaced by ``WipingGripperVX300S`` (task-specific MJCF).
 
         base_types (None or str or list of str): type of base, used to instantiate base models from base factory.
             Default is "default", which is the default base associated with the robot(s) the 'robots' specification.
@@ -85,6 +85,15 @@ class Wipe(ManipulationEnv):
 
             :Note: Specifying "default" will automatically use the default noise settings.
                 Specifying None will automatically create the required dict with "magnitude" set to 0.0.
+
+        table_full_size (None or 3-tuple): x, y, and z dimensions of the table. If None, uses
+            ``task_config["table_full_size"]`` (see `DEFAULT_WIPE_CONFIG`).
+
+        table_friction (None or 3-tuple): The three MuJoCo friction parameters for the table.
+            If None, uses ``task_config["table_friction"]``.
+
+        table_offset (None or 3-tuple): (x, y, z) offset for `WipeArena` placement; z sets the tabletop height.
+            If None, uses ``task_config["table_offset"]``.
 
         use_camera_obs (bool): if True, every observation includes rendered image(s)
 
@@ -177,6 +186,9 @@ class Wipe(ManipulationEnv):
         gripper_types="WipingGripper",
         base_types="default",
         initialization_noise="default",
+        table_full_size=None,
+        table_friction=None,
+        table_offset=None,
         use_camera_obs=True,
         use_object_obs=True,
         reward_scale=1.0,
@@ -202,13 +214,43 @@ class Wipe(ManipulationEnv):
         renderer_config=None,
         seed=None,
     ):
-        # Assert that the gripper type is None
-        assert (
-            gripper_types == "WipingGripper"
-        ), "Tried to specify gripper other than WipingGripper in Wipe environment!"
+        _wipe_grippers = frozenset({"WipingGripper", "WipingGripperVX300S"})
+        robots_list = list(robots) if isinstance(robots, (list, tuple)) else [robots]
+        if isinstance(gripper_types, str):
+            gt = gripper_types
+            primary = str(robots_list[0]).upper()
+            if gt == "WipingGripper" and primary == "VX300S":
+                gt = "WipingGripperVX300S"
+            assert gt in _wipe_grippers, "Wipe environment only supports WipingGripper / WipingGripperVX300S."
+            assert not (gt == "WipingGripperVX300S" and primary != "VX300S"), (
+                "WipingGripperVX300S is only valid for robot VX300S."
+            )
+            gripper_types = gt
+        else:
+            assert len(gripper_types) == len(robots_list), "gripper_types must match robots length."
+            resolved = []
+            for rname, gt_in in zip(robots_list, gripper_types):
+                primary = str(rname).upper()
+                gt = gt_in
+                if gt == "WipingGripper" and primary == "VX300S":
+                    gt = "WipingGripperVX300S"
+                assert gt in _wipe_grippers, "Wipe environment only supports WipingGripper / WipingGripperVX300S."
+                assert not (gt == "WipingGripperVX300S" and primary != "VX300S"), (
+                    "WipingGripperVX300S is only valid for robot VX300S."
+                )
+                resolved.append(gt)
+            gripper_types = resolved
 
-        # Get config
-        self.task_config = task_config if task_config is not None else DEFAULT_WIPE_CONFIG
+        # Get config (optional constructor overrides for table geometry, same pattern as Lift)
+        self.task_config = deepcopy(DEFAULT_WIPE_CONFIG)
+        if task_config is not None:
+            self.task_config.update(task_config)
+        if table_full_size is not None:
+            self.task_config["table_full_size"] = list(table_full_size)
+        if table_friction is not None:
+            self.task_config["table_friction"] = list(table_friction)
+        if table_offset is not None:
+            self.task_config["table_offset"] = list(table_offset)
 
         # Set task-specific parameters
 

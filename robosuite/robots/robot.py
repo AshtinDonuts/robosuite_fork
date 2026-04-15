@@ -296,7 +296,11 @@ class Robot(object):
                 else:
                     gq = None
                 if gq is not None:
-                    self.sim.data.qpos[self._ref_gripper_joint_pos_indexes[arm]] = gq
+                    gq = np.asarray(gq, dtype=float).reshape(-1)
+                    grip_qpos_ix = self._ref_gripper_joint_pos_indexes[arm]
+                    # e.g. VX300S split_init_qpos includes finger qpos, but WipingGripper has no MJCF joints
+                    if len(grip_qpos_ix) > 0:
+                        self.sim.data.qpos[grip_qpos_ix] = gq
 
                 self.gripper[arm].current_action = np.zeros(self.gripper[arm].dof)
 

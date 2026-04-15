@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import random
+import sys
 
 import h5py
 import numpy as np
@@ -42,8 +43,9 @@ if __name__ == "__main__":
     hdf5_path = os.path.join(demo_path, "demo.hdf5")
 
     f = h5py.File(hdf5_path, "r")
-    env_name = f["data"].attrs["env"]
-    env_info = json.loads(f["data"].attrs["env_info"])
+    data = f["data"]
+    env_name = data.attrs["env"]
+    env_info = json.loads(data.attrs["env_info"])
 
     env = robosuite.make(
         **env_info,
@@ -55,8 +57,18 @@ if __name__ == "__main__":
         control_freq=20,
     )
 
-    # list of all demonstrations episodes
-    demos = list(f["data"].keys())
+    # Episode groups contain a `states` dataset (see collect_human_demonstrations.py).
+    demos = [k for k in data.keys() if isinstance(data[k], h5py.Group) and "states" in data[k]]
+    if not demos:
+        f.close()
+        print(
+            "No playable episodes in {!r}: the HDF5 'data' group has no subgroups with a "
+            "'states' dataset.\n"
+            "If you used collect_human_demonstrations.py, only successful demonstrations are "
+            "saved; unsuccessful runs leave an empty file.".format(hdf5_path),
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     while True:
         print("Playing back random episode... (press ESC to quit)")
@@ -82,6 +94,9 @@ if __name__ == "__main__":
             env.sim.set_state_from_flattened(states[0])
             env.sim.forward()
 
+            import time
+            time.sleep(0.5)
+
             # load the actions and play them back open-loop
             actions = np.array(f["data/{}/actions".format(ep)][()])
             num_actions = actions.shape[0]
@@ -103,6 +118,8 @@ if __name__ == "__main__":
             for state in states:
                 env.sim.set_state_from_flattened(state)
                 env.sim.forward()
+                import time
+                time.sleep(0.02)
                 if env.renderer == "mjviewer":
                     env.viewer.update()
                 env.render()
