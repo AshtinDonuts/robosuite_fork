@@ -133,7 +133,7 @@ class Device(metaclass=abc.ABCMeta):
         gripper = robot.gripper[active_arm]
         gripper_dof = robot.gripper[active_arm].dof
 
-        assert controller.name in ["OSC_POSE", "JOINT_POSITION"], "only supporting OSC_POSE and JOINT_POSITION for now"
+        assert controller.name in ["OSC_POSE", "JOINT_POSITION", "FABRIC_OSC_POSE"], "only supporting OSC_POSE, JOINT_POSITION, and FABRIC_OSC_POSE for now"
 
         # process raw device inputs
         drotation = raw_drotation[[1, 0, 2]]

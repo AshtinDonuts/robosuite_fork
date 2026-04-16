@@ -30,8 +30,9 @@ from robosuite.controllers.parts.arm.fabric_guided_osc import PANDA_FABRICS_PARA
 # ---------------------------------------------------------------------------
 # Obstacle parameters (fixed in world frame)
 # ---------------------------------------------------------------------------
-OBSTACLE_POS    = np.array([0.50, 0.0, 1.15])   # directly in front of the default Panda EEF path
-OBSTACLE_RADIUS = 0.06                            # [m]
+OBSTACLE_POS    = np.array([0.20, 0.0, 1.3])   # [0.50, 0.0, 1.15]
+OBSTACLE_RADIUS = 0.02                           # [m]
+SCALE_ACTION = 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -152,9 +153,10 @@ def main(n_steps: int = 500, render: bool = True):
 
     print(f"\nFabrics planner active: {arm_ctrl._fabrics_ready}")
 
-    # Constant policy: push EEF in +x direction; zero all other dims + gripper
+    # Constant policy: push EEF in +x direction; zero all other dims + gripper.
+    # 0.2 → scaled to 0.2 * output_max[0] = 0.01 m per policy step (slow approach)
     action = np.zeros(env.action_dim)
-    action[0] = 1.0  # scaled to output_max[0] = 0.05 m per step
+    action[0] = 1.0 * SCALE_ACTION
 
     eef_positions  = []
     avoid_norms    = []
@@ -178,11 +180,33 @@ def main(n_steps: int = 500, render: bool = True):
                 avoid_norms.append(0.0)
 
         if step % 50 == 0:
-            dist = np.linalg.norm(eef_pos - OBSTACLE_POS)
+            dist_eef = np.linalg.norm(eef_pos - OBSTACLE_POS)
             avg_avoid = np.mean(avoid_norms[-50:]) if avoid_norms else 0.0
+
+            # Per-link distances: the fabrics planner repels each collision link,
+            # not the EEF.  The closest link drives the repulsion, so we report
+            # all of them to see which one is actually near the sphere.
+            # Robosuite bodies are named "robot0_link3", while fabrics params
+            # use "panda_link3" – strip "panda_" and prepend "robot0_".
+            link_dists = {}
+            for link in arm_ctrl._fabrics_params.get("collision_links", []):
+                try:
+                    sim_name = "robot0_" + link.replace("panda_", "")
+                    body_id = env.sim.model.body_name2id(sim_name)
+                    link_pos = env.sim.data.body_xpos[body_id]
+                    link_dists[link] = float(np.linalg.norm(link_pos - OBSTACLE_POS))
+                except Exception:
+                    pass
+
+            closest = min(link_dists, key=link_dists.get) if link_dists else "?"
+            min_link_dist = link_dists.get(closest, float("nan"))
+            link_str = "  ".join(f"{k[-1]}:{v:.2f}" for k, v in link_dists.items())
+
             print(
                 f"step {step:4d} | EEF {np.round(eef_pos, 3)} "
-                f"| dist→sphere: {dist:.3f} m "
+                f"| EEF→sphere: {dist_eef:.3f} m "
+                f"| closest link: {closest}({min_link_dist:.3f} m) "
+                f"| links [{link_str}] "
                 f"| |τ_fabric| avg: {avg_avoid:.2f} Nm"
             )
 
