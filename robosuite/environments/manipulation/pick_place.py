@@ -20,6 +20,9 @@ from robosuite.models.tasks import ManipulationTask
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import SequentialCompositeSampler, UniformRandomSampler
 
+# Default bin1 position; must stay in sync with PickPlace.__init__ default @bin1_pos.
+_PICKPLACE_DEFAULT_BIN1_POS = (0.1, -0.25, 0.8)
+
 
 class PickPlace(ManipulationEnv):
     """
@@ -73,6 +76,10 @@ class PickPlace(ManipulationEnv):
         bin1_pos (3-tuple): Absolute cartesian coordinates of the bin initially holding the objects
 
         bin2_pos (3-tuple): Absolute cartesian coordinates of the goal bin
+
+        table_offset (None or 3-tuple): If set (e.g. by ``suite.make`` / demo scripts), both bins are
+            shifted by ``table_offset - default_bin1_pos`` so the same values used for `Lift`'s table
+            placement align this task's workspace. If None, ``bin1_pos`` / ``bin2_pos`` are used as given.
 
         z_offset (float): amount of z offset for initializing objects in bin
 
@@ -183,8 +190,9 @@ class PickPlace(ManipulationEnv):
         initialization_noise="default",
         table_full_size=(0.39, 0.49, 0.82),
         table_friction=(1, 0.005, 0.0001),
-        bin1_pos=(0.1, -0.25, 0.8),
+        bin1_pos=_PICKPLACE_DEFAULT_BIN1_POS,
         bin2_pos=(0.1, 0.28, 0.8),
+        table_offset=None,
         z_offset=0.0,
         z_rotation=None,
         use_camera_obs=True,
@@ -230,8 +238,12 @@ class PickPlace(ManipulationEnv):
         self.table_friction = table_friction
 
         # settings for bin position
-        self.bin1_pos = np.array(bin1_pos)
-        self.bin2_pos = np.array(bin2_pos)
+        self.bin1_pos = np.array(bin1_pos, dtype=float)
+        self.bin2_pos = np.array(bin2_pos, dtype=float)
+        if table_offset is not None:
+            shift = np.array(table_offset, dtype=float) - np.array(_PICKPLACE_DEFAULT_BIN1_POS, dtype=float)
+            self.bin1_pos += shift
+            self.bin2_pos += shift
         self.z_offset = z_offset  # z offset for initializing items in bin
         self.z_rotation = z_rotation  # z rotation for initializing items in bin
 

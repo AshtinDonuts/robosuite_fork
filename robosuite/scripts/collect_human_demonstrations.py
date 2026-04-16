@@ -23,6 +23,29 @@ from robosuite.controllers.composite.composite_controller_factory import refacto
 from robosuite.wrappers import DataCollectionWrapper, VisualizationWrapper
 
 
+def _hdf5_attr_str(value):
+    """
+    HDF5 attributes must use native Python scalars/strings. NumPy scalar/ndarray
+    values (including dtype=object) otherwise raise TypeError in h5py.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return ""
+        el = value.reshape(-1)[0]
+        if value.dtype == object:
+            return _hdf5_attr_str(el.item())
+        return _hdf5_attr_str(el.item())
+    if isinstance(value, np.generic):
+        return str(value.item())
+    return str(value)
+
+
 def _device_input2action(device, goal_update_mode):
     """Call device.input2action; LeaderArm omits goal_update_mode (joint-space only)."""
     if "goal_update_mode" in inspect.signature(device.input2action).parameters:
@@ -172,7 +195,7 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
 
         for state_file in sorted(glob(state_paths)):
             dic = np.load(state_file, allow_pickle=True)
-            env_name = str(dic["env"])
+            env_name = _hdf5_attr_str(dic["env"])
 
             states.extend(dic["states"])
             for ai in dic["action_infos"]:
@@ -210,9 +233,9 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
     now = datetime.datetime.now()
     grp.attrs["date"] = "{}-{}-{}".format(now.month, now.day, now.year)
     grp.attrs["time"] = "{}:{}:{}".format(now.hour, now.minute, now.second)
-    grp.attrs["repository_version"] = suite.__version__
-    grp.attrs["env"] = env_name
-    grp.attrs["env_info"] = env_info
+    grp.attrs["repository_version"] = _hdf5_attr_str(suite.__version__)
+    grp.attrs["env"] = _hdf5_attr_str(env_name)
+    grp.attrs["env_info"] = _hdf5_attr_str(env_info)
 
     f.close()
 
