@@ -34,7 +34,7 @@ setup(
     },
     eager_resources=["*"],
     include_package_data=True,
-    python_requires=">=3",
+    python_requires=">=3.9",
     description="robosuite: A Modular Simulation Framework and Benchmark for Robot Learning",
     author="Yuke Zhu",
     url="https://github.com/ARISE-Initiative/robosuite",
