@@ -19,6 +19,21 @@ class BottleObject(MujocoXMLObject):
         )
 
 
+class BowlObject(MujocoXMLObject):
+    """
+    Bowl object (mesh from objects/bowl.xml).
+    """
+
+    def __init__(self, name):
+        super().__init__(
+            xml_path_completion("objects/bowl.xml"),
+            name=name,
+            joints=[dict(type="free", damping="0.0005")],
+            obj_type="all",
+            duplicate_collision_geoms=True,
+        )
+
+
 class CanObject(MujocoXMLObject):
     """
     Coke can object (used in PickPlace)
