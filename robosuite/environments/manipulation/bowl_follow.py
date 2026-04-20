@@ -159,6 +159,7 @@ class BowlFollow(ManipulationEnv):
         use_object_obs=True,
         reward_scale=1.0,
         reward_shaping=False,
+        bowl_scale=1.5,  #
         placement_initializer=None,
         has_renderer=False,
         has_offscreen_renderer=True,
@@ -188,6 +189,9 @@ class BowlFollow(ManipulationEnv):
         # reward configuration
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
+
+        # bowl scale factor (uniform)
+        self.bowl_scale = bowl_scale
 
         # whether to use ground-truth object states
         self.use_object_obs = use_object_obs
@@ -275,6 +279,8 @@ class BowlFollow(ManipulationEnv):
         mujoco_arena.set_origin([0, 0, 0])
 
         self.bowl = BowlObject(name="bowl")
+        if self.bowl_scale != 1.0:
+            self.bowl.set_scale(self.bowl_scale)
 
         # Create placement initializer
         if self.placement_initializer is not None:
