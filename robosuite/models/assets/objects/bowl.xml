@@ -1,17 +1,206 @@
 <mujoco model="bowl">
   <asset>
-    <mesh file="meshes/bowl.obj" name="bowl_mesh"
-          scale="0.001 0.001 0.001"
-          refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl.obj" name="bowl_visual_mesh"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_00.obj" name="bowl_col_00"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_01.obj" name="bowl_col_01"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_02.obj" name="bowl_col_02"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_03.obj" name="bowl_col_03"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_04.obj" name="bowl_col_04"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_05.obj" name="bowl_col_05"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_06.obj" name="bowl_col_06"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_07.obj" name="bowl_col_07"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_08.obj" name="bowl_col_08"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_09.obj" name="bowl_col_09"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_10.obj" name="bowl_col_10"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_11.obj" name="bowl_col_11"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_12.obj" name="bowl_col_12"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_13.obj" name="bowl_col_13"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_14.obj" name="bowl_col_14"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_15.obj" name="bowl_col_15"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_16.obj" name="bowl_col_16"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_17.obj" name="bowl_col_17"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_18.obj" name="bowl_col_18"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_19.obj" name="bowl_col_19"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_20.obj" name="bowl_col_20"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_21.obj" name="bowl_col_21"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_22.obj" name="bowl_col_22"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_23.obj" name="bowl_col_23"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_24.obj" name="bowl_col_24"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_25.obj" name="bowl_col_25"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_26.obj" name="bowl_col_26"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_27.obj" name="bowl_col_27"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_28.obj" name="bowl_col_28"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_29.obj" name="bowl_col_29"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_30.obj" name="bowl_col_30"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
+    <mesh file="meshes/bowl_decomp/bowl_part_31.obj" name="bowl_col_31"
+          scale="0.001 0.001 0.001" refpos="73.82 62.75 21.56"/>
   </asset>
   <worldbody>
     <body>
       <body name="object">
-        <geom mesh="bowl_mesh" type="mesh" solimp="0.998 0.998 0.001" solref="0.001 1"
-              density="100" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+        <geom mesh="bowl_visual_mesh" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="1e-8" rgba="0.8 0.8 0.8 1"
               contype="0" conaffinity="0" group="1"/>
-        <geom mesh="bowl_mesh" type="mesh" solimp="0.998 0.998 0.001" solref="0.001 1"
-              density="100" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+        <geom mesh="bowl_col_00" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_01" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_02" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_03" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_04" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_05" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_06" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_07" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_08" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_09" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_10" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_11" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_12" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_13" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_14" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_15" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_16" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_17" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_18" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_19" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_20" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_21" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_22" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_23" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_24" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_25" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_26" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_27" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_28" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_29" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_30" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
+              group="0"/>
+        <geom mesh="bowl_col_31" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.1250" friction="0.95 0.3 0.1" rgba="0.8 0.8 0.8 1"
               group="0"/>
       </body>
       <site rgba="0 0 0 0" size="0.005" pos="0 0 -0.022" name="bottom_site"/>

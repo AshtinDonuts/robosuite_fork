@@ -30,7 +30,8 @@ class BowlObject(MujocoXMLObject):
             name=name,
             joints=[dict(type="free", damping="0.0005")],
             obj_type="all",
-            duplicate_collision_geoms=True,
+            # Collision is type="sdf"; duplicating would clone SDF into an extra visual geom.
+            duplicate_collision_geoms=False,
         )
 
 
