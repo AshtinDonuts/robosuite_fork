@@ -159,7 +159,10 @@ class BowlFollow(ManipulationEnv):
         use_object_obs=True,
         reward_scale=1.0,
         reward_shaping=False,
-        bowl_scale=1.5,  #
+        bowl_scale=(0.5, 1.5, 1.5),
+        # bowl_scale is now exposed as either:
+        # Uniform: a scalar, e.g. bowl_scale=1.5
+        # Non-uniform: a 3-vector (sx, sy, sz), e.g. bowl_scale=(1.3, 1.3, 0.8)
         placement_initializer=None,
         has_renderer=False,
         has_offscreen_renderer=True,
@@ -190,7 +193,7 @@ class BowlFollow(ManipulationEnv):
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
 
-        # bowl scale factor (uniform)
+        # bowl scale factor (uniform scalar or xyz 3-vector)
         self.bowl_scale = bowl_scale
 
         # whether to use ground-truth object states
@@ -279,8 +282,16 @@ class BowlFollow(ManipulationEnv):
         mujoco_arena.set_origin([0, 0, 0])
 
         self.bowl = BowlObject(name="bowl")
-        if self.bowl_scale != 1.0:
-            self.bowl.set_scale(self.bowl_scale)
+        if self.bowl_scale is not None:
+            # Allow both uniform and non-uniform scaling
+            if isinstance(self.bowl_scale, (int, float, np.floating, np.integer)):
+                if float(self.bowl_scale) != 1.0:
+                    self.bowl.set_scale(float(self.bowl_scale))
+            else:
+                scale = np.array(self.bowl_scale, dtype=float).reshape(-1)
+                assert scale.size == 3, f"bowl_scale must be a scalar or length-3 (x,y,z); got {self.bowl_scale}"
+                if not np.allclose(scale, np.ones(3)):
+                    self.bowl.set_scale(scale.tolist())
 
         # Create placement initializer
         if self.placement_initializer is not None:
