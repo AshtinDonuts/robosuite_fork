@@ -1,7 +1,20 @@
 """
-A script to collect a batch of human demonstrations.
+Collect human demonstrations and save end-effector state trajectories as pickle files.
 
-The demonstrations can be played back using the `playback_demonstrations_from_hdf5.py` script.
+This script records trajectories in the same pickle format as
+`.../kinova_6feb_pick/ee_state_0.pk` used by pumafabrics:
+
+    {
+        "x_pos":  [np.ndarray shape (3,), ...],          # world-frame EE position (m)
+        "x_rot":  [np.ndarray shape (3, 3), ...],        # world-frame EE rotation matrix
+        "x_dot":  [np.ndarray shape (6,), ...],          # [linear_vel(3), angular_vel(3)] in world frame
+        "delta_t": np.ndarray shape (T,),                # wall-clock dt between samples (s)
+    }
+
+Notes:
+    - The EE pose / twist are taken from MuJoCo site quantities for the robot gripper
+      "grip_site" (see robot.eef_site_id).
+    - `delta_t` is measured using wall-clock time to match the reference dataset.
 """
 
 import argparse
@@ -9,6 +22,7 @@ import datetime
 import inspect
 import json
 import os
+import pickle
 import time
 from glob import glob
 
@@ -46,6 +60,28 @@ def _hdf5_attr_str(value):
     return str(value)
 
 
+def _get_eef_state(env, robot_index: int, arm: str):
+    """
+    Returns (x_pos, x_rot, x_dot) using MuJoCo site quantities for the EE grip site.
+    """
+    robot = env.robots[robot_index]
+    site_id = robot.eef_site_id[arm]
+
+    # site_xpos: (3,), site_xmat: (9,) row-major, site linear/angular velocity: (3,)
+    x_pos = env.sim.data.site_xpos[site_id].copy().astype(np.float64, copy=False)
+    x_rot = env.sim.data.site_xmat[site_id].reshape(3, 3).copy().astype(np.float64, copy=False)
+    # MuJoCo >= 3 exposes site velocities via accessors, not data.site_xvelp/site_xvelr
+    try:
+        site_name = robot.gripper[arm].important_sites["grip_site"]
+    except Exception:
+        # Fallback if gripper / important_sites isn't available
+        site_name = env.sim.model.site_id2name(site_id)
+    x_vel_lin = np.asarray(env.sim.data.get_site_xvelp(site_name), dtype=np.float64)
+    x_vel_ang = np.asarray(env.sim.data.get_site_xvelr(site_name), dtype=np.float64)
+    x_dot = np.concatenate([x_vel_lin, x_vel_ang]).astype(np.float64, copy=False)
+    return x_pos, x_rot, x_dot
+
+
 def _device_input2action(device, goal_update_mode):
     """Call device.input2action; LeaderArm omits goal_update_mode (joint-space only)."""
     if "goal_update_mode" in inspect.signature(device.input2action).parameters:
@@ -53,11 +89,18 @@ def _device_input2action(device, goal_update_mode):
     return device.input2action()
 
 
-def collect_human_trajectory(env, device, arm, max_fr, goal_update_mode):
+def collect_human_trajectory(
+    env,
+    device,
+    arm,
+    max_fr,
+    goal_update_mode,
+    robot_index: int = 0,
+    puma_dataset: bool = False,
+):
     """
     Use the device (keyboard or SpaceNav 3D mouse) to collect a demonstration.
-    The rollout trajectory is saved to files in npz format.
-    Modify the DataCollectionWrapper wrapper to add new fields or change data formats.
+    If puma_dataset is True, returns a trajectory dict in the target pickle format.
 
     Args:
         env (MujocoEnv): environment to control
@@ -84,6 +127,12 @@ def collect_human_trajectory(env, device, arm, max_fr, goal_update_mode):
         }
         for robot in env.robots
     ]
+
+    x_pos, x_rot, x_dot, delta_t = None, None, None, None
+    prev_t = None
+    if puma_dataset:
+        x_pos, x_rot, x_dot, delta_t = [], [], [], []
+        prev_t = time.time()
 
     # Loop until we get a reset from the input or the task completes
     while True:
@@ -126,6 +175,18 @@ def collect_human_trajectory(env, device, arm, max_fr, goal_update_mode):
         env.step(env_action)
         env.render()
 
+        if puma_dataset:
+            # Record EE state after the step (achieved state)
+            now_t = time.time()
+            dt = now_t - prev_t
+            prev_t = now_t
+
+            xp, xr, xd = _get_eef_state(env, robot_index=robot_index, arm=arm)
+            x_pos.append(xp)
+            x_rot.append(xr)
+            x_dot.append(xd)
+            delta_t.append(float(dt))
+
         # Also break if we complete the task
         if task_completion_hold_count == 0:
             break
@@ -148,34 +209,39 @@ def collect_human_trajectory(env, device, arm, max_fr, goal_update_mode):
 
     # Do not call env.close() here: this function is invoked in a loop; closing would
     # destroy the MuJoCo sim and viewer and break the next episode (and ROS leader arms).
+    if not puma_dataset:
+        return None
+    return {
+        "x_pos": x_pos,
+        "x_rot": x_rot,
+        "x_dot": x_dot,
+        "delta_t": np.asarray(delta_t, dtype=np.float64),
+    }
+
+
+def _save_ee_state_pickle(traj: dict, out_path: str):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "wb") as f:
+        pickle.dump(traj, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
     """
-    Gathers the demonstrations saved in @directory into a
-    single hdf5 file.
+    Gathers the demonstrations saved in @directory into a single hdf5 file.
 
-    The strucure of the hdf5 file is as follows.
+    The structure of the hdf5 file is as follows.
 
     data (group)
         date (attribute) - date of collection
         time (attribute) - time of collection
         repository_version (attribute) - repository version used during collection
         env (attribute) - environment name on which demos were collected
+        env_info (attribute) - JSON config used to create the env
 
-        demo1 (group) - every demonstration has a group
+        demo_1 (group) - every demonstration has a group
             model_file (attribute) - model xml string for demonstration
             states (dataset) - flattened mujoco states
             actions (dataset) - actions applied during demonstration
-
-        demo2 (group)
-        ...
-
-    Args:
-        directory (str): Path to the directory containing raw demonstrations.
-        out_dir (str): Path to where to store the hdf5 file.
-        env_info (str): JSON-encoded string containing environment information,
-            including controller and robot info
     """
 
     hdf5_path = os.path.join(out_dir, "demo.hdf5")
@@ -219,8 +285,8 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
 
             # store model xml as an attribute
             xml_path = os.path.join(directory, ep_directory, "model.xml")
-            with open(xml_path, "r") as f:
-                xml_str = f.read()
+            with open(xml_path, "r") as f_xml:
+                xml_str = f_xml.read()
             ep_data_grp.attrs["model_file"] = xml_str
 
             # write datasets for states and actions
@@ -301,7 +367,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--renderer",
-        type=str,
+    type=str,
         default="mjviewer",
         help="Use Mujoco's builtin interactive viewer (mjviewer) or OpenCV viewer (mujoco)",
     )
@@ -310,6 +376,36 @@ if __name__ == "__main__":
         default=20,
         type=int,
         help="Sleep when simluation runs faster than specified frame rate; 20 fps is real time.",
+    )
+    parser.add_argument(
+        "--eps_name",
+        type=str,
+        required=True,
+        help="Name of the episode folder.",
+    )
+    parser.add_argument(
+        "--puma_dataset",
+        action="store_true",
+        help="If set, save trajectories as ee_state_*.pk in the pumafabrics-compatible format. "
+        "If not set, use the original robosuite HDF5 (demo.hdf5) collection pipeline.",
+    )
+    parser.add_argument(
+        "--out-format",
+        type=str,
+        default="pkl",
+        choices=["pkl"],
+        help="Output format. Currently only 'pkl' is supported (ee_state_*.pk).",
+    )
+    parser.add_argument(
+        "--save-only-successful",
+        action="store_true",
+        help="If set, only saves trajectories that end in task success.",
+    )
+    parser.add_argument(
+        "--robot-index",
+        type=int,
+        default=0,
+        help="Which robot index to record EE state from (default: 0).",
     )
     parser.add_argument(
         "--reverse_xy",
@@ -489,10 +585,10 @@ if __name__ == "__main__":
     # Wrap this with visualization wrapper
     env = VisualizationWrapper(env)
 
-    # Grab reference to controller config and convert it to json-encoded string
-    env_info = json.dumps(config)
-
-    # wrap the environment with data collection wrapper
+    tmp_directory = None
+    # Wrap the environment with data collection wrapper (records state_*.npz).
+    # Even in --puma_dataset mode, we also record using the original robosuite
+    # pipeline so users can get demo.hdf5 alongside ee_state_*.pk.
     tmp_directory = "/tmp/{}".format(str(time.time()).replace(".", "_"))
     env = DataCollectionWrapper(env, tmp_directory)
 
@@ -586,10 +682,44 @@ if __name__ == "__main__":
     new_dir = os.path.join(args.directory, "{}_{}".format(t1, t2))
     os.makedirs(new_dir)
 
+    # make a custom named directory
+    new_dir = os.path.join(args.directory, args.eps_name)
+    os.makedirs(new_dir)
+
+    # Save a small metadata file (keeps parity with previous behavior)
+    with open(os.path.join(new_dir, "env_info.json"), "w") as f:
+        json.dump(config, f, indent=2, sort_keys=True)
+
+    env_info = json.dumps(config)
+
     # collect demonstrations
+    saved_idx = 0  # used for ee_state_{i}.pk in puma_dataset mode
     try:
         while True:
-            collect_human_trajectory(env, device, args.arm, args.max_fr, args.goal_update_mode)
+            traj = collect_human_trajectory(
+                env,
+                device,
+                args.arm,
+                args.max_fr,
+                args.goal_update_mode,
+                robot_index=args.robot_index,
+                puma_dataset=args.puma_dataset,
+            )
+
+            if args.puma_dataset:
+                # Determine success based on current env state after the rollout loop ends
+                success = bool(env._check_success())
+                if args.save_only_successful and not success:
+                    print("Demonstration unsuccessful; not saved (use --save-only-successful off to save all).")
+                    continue
+
+                out_path = os.path.join(new_dir, f"ee_state_{saved_idx}.pk")
+                _save_ee_state_pickle(traj, out_path)
+                print(f"Saved: {out_path}  (T={len(traj['delta_t'])}, success={success})")
+                saved_idx += 1
+
+            # Original robosuite pipeline: consolidate the raw npz dumps into demo.hdf5
+            assert tmp_directory is not None
             gather_demonstrations_as_hdf5(tmp_directory, new_dir, env_info)
     finally:
         device_closer = getattr(device, "close", None)
