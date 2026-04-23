@@ -3,7 +3,7 @@ Playback puma_dataset-style end-effector pose traces in robosuite.
 
 This script expects an episode directory containing:
   - env_info.json
-  - ee_state_*.pk  (pickles with keys: x_pos, x_rot, x_dot, delta_t)
+  - ee_state_*.pk  (pickles with keys: x_pos, x_rot, x_dot, delta_t[, gripper_action])
 
 Example:
     $ python demo_playback_puma_dataset.py --episode_dir /path/to/episode
@@ -43,14 +43,21 @@ def _iter_episode_steps(episode_dir: str):
     if not pk_paths:
         raise FileNotFoundError(f"No ee_state_*.pk found under {episode_dir}")
     for pk_idx, pk_path in enumerate(pk_paths):
-        print(f'Replaying Episdoe: {pk_idx}')
+        print(f'Replaying Episode: {pk_idx}')
         trace = _load_ee_trace(pk_path)
         x_pos = trace["x_pos"]
         x_rot = trace["x_rot"]
         delta_t = np.asarray(trace["delta_t"])
+        gripper_action = trace.get("gripper_action", None)
         n = min(len(x_pos), len(x_rot), len(delta_t))
         for i in range(n):
-            yield np.asarray(x_pos[i], dtype=np.float64), np.asarray(x_rot[i], dtype=np.float64), float(delta_t[i])
+            ga = np.asarray(gripper_action[i], dtype=np.float64) if gripper_action is not None else None
+            yield (
+                np.asarray(x_pos[i], dtype=np.float64),
+                np.asarray(x_rot[i], dtype=np.float64),
+                float(delta_t[i]),
+                ga,
+            )
 
 
 def _get_osc_output_max(controller_configs: dict) -> np.ndarray:
@@ -69,10 +76,19 @@ def _get_osc_output_max(controller_configs: dict) -> np.ndarray:
         return np.asarray([0.05, 0.05, 0.05, 0.5, 0.5, 0.5], dtype=np.float64)
 
 
-def _build_action(delta_pos: np.ndarray, delta_ori: np.ndarray, out_max6: np.ndarray, action_dim: int) -> np.ndarray:
+def _build_action(
+    delta_pos: np.ndarray,
+    delta_ori: np.ndarray,
+    out_max6: np.ndarray,
+    action_dim: int,
+    gripper_action: np.ndarray | None = None,
+) -> np.ndarray:
     """
     Convert desired delta pos / ori (in controller output units) into a normalized action in [-1, 1].
     Assumes symmetric output limits (default robosuite OSC configs are symmetric).
+
+    gripper_action: recorded per-step gripper command from the pickle (+1=close, -1=open).
+                    When None (old pickles without the key), gripper stays neutral (0.0).
     """
     delta6 = np.concatenate([delta_pos, delta_ori], axis=0)
     delta6 = np.clip(delta6, -out_max6, out_max6)
@@ -81,17 +97,77 @@ def _build_action(delta_pos: np.ndarray, delta_ori: np.ndarray, out_max6: np.nda
 
     if action_dim == 6:
         return act6
-    if action_dim == 7:
-        # Keep gripper neutral (no open/close command)
-        return np.concatenate([act6, np.array([0.0], dtype=np.float64)], axis=0)
-    # Generic fallback: pad / trim
-    if action_dim > 6:
-        pad = np.zeros(action_dim - 6, dtype=np.float64)
-        return np.concatenate([act6, pad], axis=0)
+
+    gripper_dof = action_dim - 6
+    if gripper_dof > 0:
+        if gripper_action is not None:
+            ga = np.asarray(gripper_action, dtype=np.float64).reshape(-1)
+            # Pad or trim to exactly gripper_dof elements
+            if len(ga) < gripper_dof:
+                ga = np.concatenate([ga, np.zeros(gripper_dof - len(ga), dtype=np.float64)])
+            else:
+                ga = ga[:gripper_dof]
+        else:
+            ga = np.zeros(gripper_dof, dtype=np.float64)
+        return np.concatenate([act6, ga], axis=0)
+
     return act6[:action_dim]
 
 
-def playback_puma_episode(env, episode_dir: str, max_fr: int | None = 20, realtime_from_delta_t: bool = False):
+def _resolve_action_ref_frame(env_info: dict, action_ref_frame: str) -> str:
+    """
+    Returns "world" or "base".
+
+    - If action_ref_frame == "auto", best-effort infer from env_info controller_configs.
+    - Otherwise, returns the user-specified value.
+    """
+    if action_ref_frame != "auto":
+        return action_ref_frame
+    try:
+        cfg = env_info.get("controller_configs", {}) or {}
+        ref = cfg.get("body_parts", {}).get("right", {}).get("input_ref_frame", None)
+        if isinstance(ref, str) and ref in ("world", "base"):
+            return ref
+    except Exception:
+        pass
+    return "world"
+
+
+def _world_vec_to_controller_base(robot, arm: str, vec3: np.ndarray) -> np.ndarray:
+    """
+    Convert a 3-vector expressed in world frame to the controller "base" frame.
+
+    Important: For OSC, "base" corresponds to the controller origin frame (the
+    `{naming_prefix}{part_name}_center` site used by the composite controller),
+    not necessarily the robot root body frame.
+    """
+    base_ori = None
+    try:
+        cc = getattr(robot, "composite_controller", None)
+        if cc is not None and hasattr(cc, "get_controller_base_pose"):
+            _, base_ori = cc.get_controller_base_pose(controller_name=arm)
+    except Exception:
+        base_ori = None
+
+    if base_ori is None:
+        # Fallback: last-resort use robot root body orientation (may be wrong for some robots)
+        try:
+            base_ori = robot.sim.data.get_body_xmat(robot.robot_model.root_body).reshape((3, 3))
+        except Exception:
+            base_ori = robot.base_ori
+
+    world_R_base = np.asarray(base_ori, dtype=np.float64).reshape(3, 3)
+    return world_R_base.T @ np.asarray(vec3, dtype=np.float64).reshape(3,)
+
+
+def playback_puma_episode(
+    env,
+    episode_dir: str,
+    env_info: dict,
+    max_fr: int | None = 20,
+    realtime_from_delta_t: bool = False,
+    action_ref_frame: str = "auto",
+):
     env.reset()
 
     # OSC scaling (used to normalize deltas into action range)
@@ -102,16 +178,27 @@ def playback_puma_episode(env, episode_dir: str, max_fr: int | None = 20, realti
     robot = env.robots[0]
     arm = "right" if "right" in robot.arms else robot.arms[0]
 
-    for (tpos, trot, dt) in _iter_episode_steps(episode_dir):
+    ref_frame = _resolve_action_ref_frame(env_info, action_ref_frame)
+
+    for (tpos, trot, dt, gripper_ac) in _iter_episode_steps(episode_dir):
         start = time.time()
 
-        cur_pos = np.asarray(robot._hand_pos[arm], dtype=np.float64)
-        cur_rot = np.asarray(robot._hand_orn[arm], dtype=np.float64)
+        # Read current EE state from the same grip_site and in the same world frame
+        # as _get_eef_state() in collect_human_demonstrations.py uses.
+        # robot._hand_pos/_hand_orn return base-frame quantities (via pose_in_base_from_name),
+        # which would create a mixed-frame delta_pos = world_target - base_current.
+        site_id = robot.eef_site_id[arm]
+        cur_pos = np.asarray(env.sim.data.site_xpos[site_id], dtype=np.float64)
+        cur_rot = np.asarray(env.sim.data.site_xmat[site_id].reshape(3, 3), dtype=np.float64)
 
         delta_pos = tpos - cur_pos
         delta_ori = orientation_error(trot, cur_rot)
 
-        action = _build_action(delta_pos, delta_ori, out_max6, env.action_dim)
+        if ref_frame == "base":
+            delta_pos = _world_vec_to_controller_base(robot, arm, delta_pos)
+            delta_ori = _world_vec_to_controller_base(robot, arm, delta_ori)
+
+        action = _build_action(delta_pos, delta_ori, out_max6, env.action_dim, gripper_action=gripper_ac)
         env.step(action)
         env.render()
 
@@ -138,6 +225,13 @@ if __name__ == "__main__":
         action="store_true",
         help="If set, sleep according to delta_t stored in the puma dataset files",
     )
+    parser.add_argument(
+        "--action_ref_frame",
+        type=str,
+        default="auto",
+        choices=["auto", "world", "base"],
+        help="Frame for OSC delta commands. 'auto' uses env_info controller_configs input_ref_frame when available.",
+    )
     parser.add_argument("--render_camera", type=str, default="frontview", help="Camera name for onscreen renderer")
     args = parser.parse_args()
 
@@ -162,4 +256,11 @@ if __name__ == "__main__":
         control_freq=20,
     )
 
-    playback_puma_episode(env, args.episode_dir, max_fr=args.max_fr, realtime_from_delta_t=args.realtime)
+    playback_puma_episode(
+        env,
+        args.episode_dir,
+        env_info=env_info,
+        max_fr=args.max_fr,
+        realtime_from_delta_t=args.realtime,
+        action_ref_frame=args.action_ref_frame,
+    )

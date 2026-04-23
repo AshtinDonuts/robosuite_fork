@@ -5,10 +5,11 @@ This script records trajectories in the same pickle format as
 `.../kinova_6feb_pick/ee_state_0.pk` used by pumafabrics:
 
     {
-        "x_pos":  [np.ndarray shape (3,), ...],          # world-frame EE position (m)
-        "x_rot":  [np.ndarray shape (3, 3), ...],        # world-frame EE rotation matrix
-        "x_dot":  [np.ndarray shape (6,), ...],          # [linear_vel(3), angular_vel(3)] in world frame
-        "delta_t": np.ndarray shape (T,),                # wall-clock dt between samples (s)
+        "x_pos":         [np.ndarray shape (3,), ...],        # world-frame EE position (m)
+        "x_rot":         [np.ndarray shape (3, 3), ...],      # world-frame EE rotation matrix
+        "x_dot":         [np.ndarray shape (6,), ...],        # [linear_vel(3), angular_vel(3)] in world frame
+        "delta_t":       np.ndarray shape (T,),               # wall-clock dt between samples (s)
+        "gripper_action": [np.ndarray shape (dof,), ...],     # per-step gripper command (+1=close, -1=open)
     }
 
 Notes:
@@ -128,10 +129,10 @@ def collect_human_trajectory(
         for robot in env.robots
     ]
 
-    x_pos, x_rot, x_dot, delta_t = None, None, None, None
+    x_pos, x_rot, x_dot, delta_t, gripper_action = None, None, None, None, None
     prev_t = None
     if puma_dataset:
-        x_pos, x_rot, x_dot, delta_t = [], [], [], []
+        x_pos, x_rot, x_dot, delta_t, gripper_action = [], [], [], [], []
         prev_t = time.time()
 
     # Loop until we get a reset from the input or the task completes
@@ -186,6 +187,17 @@ def collect_human_trajectory(
             x_rot.append(xr)
             x_dot.append(xd)
             delta_t.append(float(dt))
+            # Record the gripper command that was just sent (+1=close, -1=open).
+            # action_dict[f"{arm}_gripper"] is the latched position command maintained
+            # by all_prev_gripper_actions, so it reflects the true commanded state.
+            gripper_key = f"{arm}_gripper"
+            ga = action_dict.get(gripper_key, np.zeros(env.robots[robot_index].gripper[arm].dof))
+            gripper_action.append(np.asarray(ga, dtype=np.float64).copy())
+
+            ## Debug
+            print(f"{xp=}\n")
+            print(f"{xr=}")
+            print(f"{xd=}")
 
         # Also break if we complete the task
         if task_completion_hold_count == 0:
@@ -216,6 +228,7 @@ def collect_human_trajectory(
         "x_rot": x_rot,
         "x_dot": x_dot,
         "delta_t": np.asarray(delta_t, dtype=np.float64),
+        "gripper_action": gripper_action,  # list of np.ndarray (dof,) per timestep
     }
 
 
