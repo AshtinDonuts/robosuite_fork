@@ -362,7 +362,7 @@ class OperationalSpaceController(Controller):
         Returns:
             np.array: updated goal orientation in the controller frame
         """
-        if goal_update_mode is None:
+        if goal_update_mode is None: 
             goal_update_mode = self._goal_update_mode
         assert goal_update_mode in ["achieved", "desired"]
 

@@ -660,7 +660,10 @@ class MujocoEnv(metaclass=EnvMeta):
 
         self.close()
 
-        # Since we are reloading from an xml_string, we are deterministically resetting
+        # Since we are reloading from an xml_string, we are deterministically resetting.
+        # Save the caller's value so we can restore it afterwards (e.g. if the user set
+        # deterministic_reset=True persistently, we must not clobber it).
+        _prev_deterministic_reset = self.deterministic_reset
         self.deterministic_reset = True
 
         # initialize sim from xml
@@ -669,8 +672,9 @@ class MujocoEnv(metaclass=EnvMeta):
         # Now reset as normal
         self.reset()
 
-        # Turn off deterministic reset
-        self.deterministic_reset = False
+        # Restore the previous deterministic_reset value rather than forcing False,
+        # so that a persistent deterministic_reset=True survives across episodes.
+        self.deterministic_reset = _prev_deterministic_reset
 
     def update_state(self):
         """

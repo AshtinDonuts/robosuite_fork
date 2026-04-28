@@ -723,9 +723,29 @@ class Wipe(ManipulationEnv):
     def _reset_internal(self):
         super()._reset_internal()
 
-        # inherited class should reset positions of objects (only if we're not using a deterministic reset)
-        if not self.deterministic_reset:
+        # Dirt path reset behavior:
+        # - If a fixed dirt layout is provided (e.g. for cross-run reproducibility), always restore those marker positions.
+        # - Else, if not deterministic_reset, resample a new dirt path (original behavior).
+        # - Else (deterministic_reset), keep marker positions static but restore "dirty" visuals each episode.
+        fixed_xy = getattr(self, "_fixed_dirt_xy", None)
+        if fixed_xy is not None:
+            markers = self.model.mujoco_arena.markers
+            assert len(fixed_xy) == len(markers), "fixed dirt layout must match number of markers"
+            for xy, marker in zip(fixed_xy, markers):
+                body_id = self.sim.model.body_name2id(marker.root_body)
+                geom_id = self.sim.model.geom_name2id(marker.visual_geoms[0])
+                site_id = self.sim.model.site_name2id(marker.sites[0])
+                self.sim.model.body_pos[body_id] = np.array([xy[0], xy[1], self.model.mujoco_arena.table_half_size[2]])
+                self.sim.model.geom_rgba[geom_id][3] = 1
+                self.sim.model.site_rgba[site_id][3] = 0
+        elif not self.deterministic_reset:
             self.model.mujoco_arena.reset_arena(self.sim)
+        else:
+            for marker in self.model.mujoco_arena.markers:
+                geom_id = self.sim.model.geom_name2id(marker.visual_geoms[0])
+                site_id = self.sim.model.site_name2id(marker.sites[0])
+                self.sim.model.geom_rgba[geom_id][3] = 1
+                self.sim.model.site_rgba[site_id][3] = 0
 
         # Reset all internal vars for this wipe task
         self.timestep = 0

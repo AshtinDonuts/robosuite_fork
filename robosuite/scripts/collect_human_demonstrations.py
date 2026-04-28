@@ -323,6 +323,23 @@ if __name__ == "__main__":
     # Arguments
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--deterministic_reset",
+        action="store_true",
+        help="If set, keep the dirt/object layout fixed across episodes (no re-randomisation on reset).",
+    )
+    parser.add_argument(
+        "--save-dirt-layout",
+        action="store_true",
+        help="(Wipe only) Save the sampled dirt marker XY layout to dirt_layout.json in the output directory.",
+    )
+    parser.add_argument(
+        "--dirt-layout",
+        type=str,
+        default=None,
+        help="(Wipe only) Path to a dirt_layout.json file. If set, forces that exact dirt marker layout on every reset "
+        "(independent of --deterministic_reset).",
+    )
+    parser.add_argument(
         "--directory",
         type=str,
         default=os.path.join(suite.models.assets_root, "demonstrations_private"),
@@ -594,6 +611,15 @@ if __name__ == "__main__":
         table_full_size=tuple(args.table_full_size),
         table_offset=tuple(args.table_offset),
     )
+    if args.deterministic_reset:
+        env.deterministic_reset = True
+    # Optional: force a fixed dirt layout (Wipe only) for cross-run reproducibility.
+    if args.dirt_layout is not None:
+        with open(args.dirt_layout, "r") as f:
+            _layout = json.load(f)
+        # Accept either {"xy": [...]} or a raw list.
+        _xy = _layout.get("xy", _layout) if isinstance(_layout, dict) else _layout
+        env.unwrapped._fixed_dirt_xy = [tuple(map(float, xy)) for xy in _xy]
 
     # Wrap this with visualization wrapper
     env = VisualizationWrapper(env)
@@ -698,6 +724,22 @@ if __name__ == "__main__":
     # make a custom named directory
     new_dir = os.path.join(args.directory, args.eps_name)
     os.makedirs(new_dir)
+
+    # Optionally snapshot the initial sampled dirt layout for later reproduction (Wipe only).
+    if args.save_dirt_layout:
+        try:
+            arena = env.unwrapped.model.mujoco_arena
+            if arena.__class__.__name__ == "WipeArena":
+                xy = []
+                for marker in arena.markers:
+                    body_id = env.unwrapped.sim.model.body_name2id(marker.root_body)
+                    pos = env.unwrapped.sim.model.body_pos[body_id]
+                    xy.append([float(pos[0]), float(pos[1])])
+                with open(os.path.join(new_dir, "dirt_layout.json"), "w") as f:
+                    json.dump({"xy": xy}, f, indent=2)
+        except Exception:
+            # Best-effort: ignore if environment doesn't expose wipe markers.
+            pass
 
     # Save a small metadata file (keeps parity with previous behavior)
     with open(os.path.join(new_dir, "env_info.json"), "w") as f:
