@@ -1,113 +1,106 @@
 """
-Driver class for a Leader Arm teleoperation device.
+EEF-pose teleoperation driver for a physical Trossen leader arm.
 
-Provides direct joint-to-joint mapping from a physical or simulated leader arm
-to a follower robot's joint-space controller.  Intentionally does NOT inherit
-from Device because it bypasses OSC / IK control and operates purely in joint
-space.
-
-Concrete implementation for Trossen Robotics hardware (via ROS 2)::
-
-    device = TrossenArmLeaderArm(env, topic="/leader_solo/joint_states")
-    obs = env.reset()
-    device.start_control()
-    while True:
-        ac_dict = device.input2action()
-        if ac_dict is None:
-            break
-        env.step(robot.create_action_vector(ac_dict))
-    device.close()
-
-Trossen arm qpos layout (matches TrossenAIStationaryTask.before_step in sim_env.py)::
-
-    Index  Joint name        Notes
-    ─────────────────────────────────────────────────────
-    0      waist
-    1      shoulder
-    2      elbow
-    3      forearm_roll
-    4      wrist_angle
-    5      wrist_rotate
-    6      right_carriage    coupled (not actuated)
-    7      left_carriage     actuated ← mapped from hardware left_finger
-    ─────────────────────────────────────────────────────
-
-The 6 arm joints (indices 0–5) are forwarded directly to the JOINT_POSITION
-controller.  The gripper (index 7, ``left_carriage_joint``) is inferred from the
-hardware ``left_finger`` position published on the JointState topic.
+This module turns leader-arm joint states into an end-effector pose via a
+shadow VX300S MuJoCo model, then maps that pose onto a robosuite follower
+robot. The result is robot-agnostic EEF teleop: a physical Trossen arm can
+drive any virtual robot that exposes a pose-based arm controller.
 """
 
 import abc
 import threading
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Tuple
 
+import mujoco
 import numpy as np
 from pynput.keyboard import Key, Listener
+
+import robosuite.utils.transform_utils as T
+from robosuite.controllers.parts.arm.osc import OperationalSpaceController
+from robosuite.utils.control_utils import orientation_error
+from robosuite.utils.mjcf_utils import xml_path_completion
+
+
+def _mat_from_quat_wxyz(quat_wxyz: Sequence[float]) -> np.ndarray:
+    return T.quat2mat(T.convert_quat(np.asarray(quat_wxyz, dtype=np.float64), to="xyzw"))
+
+
+class _TrossenShadowKinematics:
+    """Small FK-only MuJoCo model for the physical VX300S leader arm."""
+
+    JOINT_NAMES: Tuple[str, ...] = (
+        "waist",
+        "shoulder",
+        "elbow",
+        "forearm_roll",
+        "wrist_angle",
+        "wrist_rotate",
+    )
+    EEF_ROT_OFFSET = _mat_from_quat_wxyz((0.707105, 0.0, 0.707108, 0.0))
+
+    def __init__(self):
+        model_path = xml_path_completion("robots/vx300s/robot.xml")
+        self.model = mujoco.MjModel.from_xml_path(model_path)
+        self.data = mujoco.MjData(self.model)
+        self._joint_qpos_addr = np.array(
+            [
+                self.model.jnt_qposadr[mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)]
+                for joint_name in self.JOINT_NAMES
+            ],
+            dtype=np.int32,
+        )
+        self._site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "ee_site")
+
+    def forward(self, joint_positions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        qpos = np.asarray(joint_positions, dtype=np.float64).reshape(len(self._joint_qpos_addr))
+        self.data.qpos[self._joint_qpos_addr] = qpos
+        mujoco.mj_forward(self.model, self.data)
+        pos = np.asarray(self.data.site_xpos[self._site_id], dtype=np.float64).copy()
+        rot = np.asarray(self.data.site_xmat[self._site_id], dtype=np.float64).reshape(3, 3).copy()
+        return pos, rot @ self.EEF_ROT_OFFSET
 
 
 class LeaderArm:
     """
-    Teleoperation device that maps joint positions from a leader arm directly to
-    the follower robot's joints.
+    Pose-based teleoperation device driven by a physical leader arm.
 
-    Unlike Device-based controllers (Keyboard, SpaceMouse) which command
-    end-effector targets in operational space, LeaderArm sends joint-position or
-    joint-delta targets and is designed for use with ``JOINT_POSITION`` (or
-    ``JOINT_VELOCITY``) controllers.
-
-    Usage pattern::
-
-        device = MyLeaderArm(env)          # subclass of LeaderArm
-        obs = env.reset()
-        device.start_control()
-
-        while True:
-            ac_dict = device.input2action()
-            if ac_dict is None:            # reset triggered
-                break
-            action = robot.create_action_vector(ac_dict)
-            env.step(action)
-
-    Subclass this and override :meth:`get_leader_joint_positions` to connect to
-    specific hardware (serial/USB, ROS topic, shadow simulation, …).
-
-    Args:
-        env (RobotEnv): The environment containing the follower robot(s).
-        joint_sensitivity (float): Scalar multiplier applied to joint deltas.
-            Values > 1 amplify motion; values < 1 attenuate it.
-        joint_limits_safety_factor (float): Fraction of each joint's usable
-            range (0–1).  The leader positions are clamped so they stay within
-            ``factor * range / 2`` of the joint-limit centre.  Set to 1.0 to
-            use the full range.
+    The leader arm is calibrated against the follower robot on `start_control()`:
+    the current leader EEF pose becomes the neutral input pose and the current
+    follower EEF pose becomes the neutral target pose. Subsequent leader motion
+    is mapped into the follower base frame and emitted as both absolute and
+    delta EEF commands.
     """
 
     def __init__(
         self,
         env,
-        joint_sensitivity: float = 1.0,
-        joint_limits_safety_factor: float = 0.95,
+        position_scale: float = 1.0,
+        orientation_scale: float = 1.0,
+        leader_joint_scale: Optional[Sequence[float]] = None,
+        leader_joint_scale_pivot: Optional[Sequence[float]] = None,
     ):
         self.env = env
-        self.joint_sensitivity = joint_sensitivity
-        self.joint_limits_safety_factor = joint_limits_safety_factor
+        self.position_scale = float(position_scale)
+        self.orientation_scale = float(orientation_scale)
+        self._leader_joint_scale = None if leader_joint_scale is None else np.asarray(leader_joint_scale, dtype=float)
+        self._leader_joint_scale_pivot = (
+            None if leader_joint_scale_pivot is None else np.asarray(leader_joint_scale_pivot, dtype=float)
+        )
 
-        self._reset_state: int = 0
-        self._enabled: bool = False
+        self._reset_state = 0
+        self._enabled = False
         self._all_robot_arms: Optional[List[List[str]]] = None
-
-        # Initialised properly in _reset_internal_state / start_control
         self.grasp_states: List[List[bool]] = []
         self.active_arm_indices: List[int] = []
-        self.active_robot: int = 0
+        self.active_robot = 0
+        self._leader_anchor_pose: Dict[Tuple[int, str], Tuple[np.ndarray, np.ndarray]] = {}
+        self._follower_anchor_pose: Dict[Tuple[int, str], Tuple[np.ndarray, np.ndarray]] = {}
 
         self._display_controls()
-
-        # Keyboard listener handles gripper, reset, and arm/robot switching
         self._listener = Listener(on_release=self._on_release)
         self._listener.start()
 
     def _on_release(self, key) -> None:
-        """q: reset signal; space: toggle grasp; s: next arm; =: next robot."""
         try:
             if hasattr(key, "char") and key.char == "q":
                 self._reset_state = 1
@@ -127,32 +120,16 @@ class LeaderArm:
         except AttributeError:
             pass
 
-    # ------------------------------------------------------------------
-    # Abstract interface
-    # ------------------------------------------------------------------
-
     @abc.abstractmethod
     def get_leader_joint_positions(self) -> np.ndarray:
-        """
-        Return the current joint positions (radians) of the leader arm as a
-        1-D numpy array whose length equals the number of controllable arm
-        joints of the active follower arm.
-
-        Override this method in subclasses to interface with physical or
-        simulated hardware::
-
-            def get_leader_joint_positions(self):
-                return np.array(self.hardware_driver.read_joints())
-        """
         raise NotImplementedError
 
-    # ------------------------------------------------------------------
-    # Robot / environment helpers
-    # ------------------------------------------------------------------
+    @abc.abstractmethod
+    def get_leader_eef_pose(self) -> Tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError
 
     @property
     def all_robot_arms(self) -> List[List[str]]:
-        """Nested list: ``all_robot_arms[robot_idx]`` → list of arm names."""
         robots = getattr(self.env, "robots", None)
         assert robots is not None and all(r is not None for r in robots), (
             "Environment has no robots to control. "
@@ -182,15 +159,11 @@ class LeaderArm:
     def grasp(self) -> bool:
         return self.grasp_states[self.active_robot][self.active_arm_index]
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _display_controls():
         def print_command(char, info):
             char += " " * (30 - len(char))
-            print("{}\t{}".format(char, info))
+            print(f"{char}	{info}")
 
         print("")
         print_command("Keys", "Command")
@@ -201,192 +174,173 @@ class LeaderArm:
         print("")
 
     def _reset_internal_state(self):
-        """Reset mutable control state (does not clear the reset signal)."""
         self.grasp_states = [[False] * len(arms) for arms in self.all_robot_arms]
         self.active_arm_indices = [0] * self.num_robots
         self.active_robot = 0
+        self._leader_anchor_pose.clear()
+        self._follower_anchor_pose.clear()
 
     def start_control(self):
-        """
-        Initialise internal state and enable command forwarding.
-
-        Call this once after ``env.reset()`` and before the teleoperation loop.
-        """
         self._reset_internal_state()
         self._reset_state = 0
         self._enabled = True
+        self._ensure_calibration(self.active_robot, self.active_arm)
 
-    # ------------------------------------------------------------------
-    # State retrieval
-    # ------------------------------------------------------------------
+    def _apply_joint_affine_map(self, qpos: np.ndarray) -> np.ndarray:
+        qpos = np.asarray(qpos, dtype=np.float64).copy()
+        if self._leader_joint_scale is None and self._leader_joint_scale_pivot is None:
+            return qpos
+        n = qpos.size
+        scale = np.ones(n, dtype=np.float64) if self._leader_joint_scale is None else self._leader_joint_scale
+        pivot = np.zeros(n, dtype=np.float64) if self._leader_joint_scale_pivot is None else self._leader_joint_scale_pivot
+        if scale.shape != (n,) or pivot.shape != (n,):
+            raise ValueError(
+                f"leader_joint_scale / leader_joint_scale_pivot must have shape ({n},); "
+                f"got scale {scale.shape}, pivot {pivot.shape}"
+            )
+        return pivot + scale * (qpos - pivot)
+
+    def _get_follower_world_pose(self, robot, arm: str) -> Tuple[np.ndarray, np.ndarray]:
+        site_id = robot.eef_site_id[arm]
+        pos = np.asarray(robot.sim.data.site_xpos[site_id], dtype=np.float64).copy()
+        rot = np.asarray(robot.sim.data.site_xmat[site_id], dtype=np.float64).reshape(3, 3).copy()
+        return pos, rot
+
+    def _get_follower_base_pose(self, robot, arm: str) -> Tuple[np.ndarray, np.ndarray]:
+        world_pos, world_rot = self._get_follower_world_pose(robot, arm)
+        base_pos = np.asarray(robot.sim.data.get_body_xpos(robot.robot_model.root_body), dtype=np.float64)
+        base_rot = np.asarray(robot.sim.data.get_body_xmat(robot.robot_model.root_body), dtype=np.float64).reshape(3, 3)
+        world_pose = T.make_pose(world_pos, world_rot)
+        base_pose = T.make_pose(base_pos, base_rot)
+        pose_in_base = T.pose_in_A_to_pose_in_B(world_pose, T.pose_inv(base_pose))
+        pos_in_base, quat_in_base = T.mat2pose(pose_in_base)
+        return np.asarray(pos_in_base, dtype=np.float64), T.quat2mat(np.asarray(quat_in_base, dtype=np.float64))
+
+    def _ensure_calibration(self, robot_idx: int, arm: str) -> None:
+        key = (robot_idx, arm)
+        if key in self._leader_anchor_pose:
+            return
+        robot = self.env.robots[robot_idx]
+        self._leader_anchor_pose[key] = self.get_leader_eef_pose()
+        self._follower_anchor_pose[key] = self._get_follower_base_pose(robot, arm)
+
+    def _map_leader_pose_to_target(self, robot, arm: str) -> Dict[str, np.ndarray]:
+        key = (self.active_robot, arm)
+        self._ensure_calibration(*key)
+        leader_pos, leader_rot = self.get_leader_eef_pose()
+        anchor_leader_pos, anchor_leader_rot = self._leader_anchor_pose[key]
+        anchor_follower_pos_base, anchor_follower_rot_base = self._follower_anchor_pose[key]
+
+        delta_pos_base = self.position_scale * (leader_pos - anchor_leader_pos)
+        rel_rot = leader_rot @ anchor_leader_rot.T
+        rel_rotvec = T.quat2axisangle(T.mat2quat(rel_rot))
+        rel_rot_scaled = T.quat2mat(T.axisangle2quat(self.orientation_scale * rel_rotvec))
+
+        target_pos_base = anchor_follower_pos_base + delta_pos_base
+        target_rot_base = rel_rot_scaled @ anchor_follower_rot_base
+
+        base_pos = np.asarray(robot.sim.data.get_body_xpos(robot.robot_model.root_body), dtype=np.float64)
+        base_rot = np.asarray(robot.sim.data.get_body_xmat(robot.robot_model.root_body), dtype=np.float64).reshape(3, 3)
+
+        return {
+            "pos_base": target_pos_base,
+            "rot_base": target_rot_base,
+            "pos_world": base_pos + base_rot @ target_pos_base,
+            "rot_world": base_rot @ target_rot_base,
+        }
+
+    def _inverse_scale_delta(self, controller, scaled_delta: np.ndarray) -> np.ndarray:
+        scaled_delta = np.asarray(scaled_delta, dtype=np.float64)
+        input_min = np.asarray(controller.input_min, dtype=np.float64)
+        input_max = np.asarray(controller.input_max, dtype=np.float64)
+        output_min = np.asarray(controller.output_min, dtype=np.float64)
+        output_max = np.asarray(controller.output_max, dtype=np.float64)
+        scale = np.abs(output_max - output_min) / np.abs(input_max - input_min)
+        out_center = (output_max + output_min) / 2.0
+        in_center = (input_max + input_min) / 2.0
+        norm_delta = (scaled_delta - out_center) / scale + in_center
+        return np.clip(norm_delta, input_min, input_max)
+
+    def _build_pose_action(self, robot, arm: str) -> Dict[str, np.ndarray]:
+        controller = robot.part_controllers[arm]
+        target = self._map_leader_pose_to_target(robot, arm)
+
+        if not isinstance(controller, OperationalSpaceController):
+            raise ValueError(
+                f"leaderarm_eef only supports pose-based arm controllers; "
+                f"got {controller.name!r} for arm {arm!r}"
+            )
+
+        if controller.input_ref_frame == "base":
+            current_pos, current_rot = self._get_follower_base_pose(robot, arm)
+            abs_pos = target["pos_base"]
+            abs_rot = target["rot_base"]
+        elif controller.input_ref_frame == "world":
+            current_pos, current_rot = self._get_follower_world_pose(robot, arm)
+            abs_pos = target["pos_world"]
+            abs_rot = target["rot_world"]
+        else:
+            raise ValueError(f"Unsupported OSC input_ref_frame: {controller.input_ref_frame!r}")
+
+        scaled_delta = np.concatenate([abs_pos - current_pos, orientation_error(abs_rot, current_rot)])
+        norm_delta = self._inverse_scale_delta(controller, scaled_delta)
+        abs_action = np.concatenate([abs_pos, T.quat2axisangle(T.mat2quat(abs_rot))])
+        return {"abs": abs_action, "delta": norm_delta}
 
     def get_controller_state(self) -> Dict:
-        """
-        Return the current device state.
-
-        Returns:
-            dict:
-                * ``joint_positions`` – np.ndarray of leader joint angles (rad)
-                * ``grasp``           – bool, True means gripper closed
-                * ``reset``           – int, 1 when a user reset was requested
-        """
+        joint_positions = self.get_leader_joint_positions()
+        leader_pos, leader_rot = self.get_leader_eef_pose()
         return dict(
-            joint_positions=self.get_leader_joint_positions(),
+            joint_positions=joint_positions,
+            eef_pos=leader_pos,
+            eef_rot=leader_rot,
             grasp=self.grasp,
             reset=self._reset_state,
         )
 
-    # ------------------------------------------------------------------
-    # Action generation
-    # ------------------------------------------------------------------
+    def input2action(self, goal_update_mode: str = "target") -> Optional[Dict]:
+        del goal_update_mode
 
-    def input2action(self) -> Optional[Dict]:
-        """
-        Convert the leader arm's joint positions into an action dict for
-        ``env.step()``.
-
-        For each arm the returned dict contains:
-
-        * ``{arm}``         – joint targets (same array as ``{arm}_abs``)
-        * ``{arm}_abs``     – absolute target joint positions (rad), clamped
-        * ``{arm}_delta``   – delta from the follower's current joint positions,
-                              scaled by ``joint_sensitivity``
-        * ``{arm}_gripper`` – gripper command array
-
-        Inactive arms (not the currently selected arm) receive zero-delta /
-        hold-current-position commands so they remain stationary.
-
-        Returns:
-            Optional[Dict]: Action dict, or ``None`` if a reset was triggered.
-        """
         state = self.get_controller_state()
         if state["reset"]:
             return None
 
-        leader_qpos: np.ndarray = state["joint_positions"]
-        grasp: bool = state["grasp"]
-        grasp_cmd: int = 1 if grasp else -1
-
         robot = self.env.robots[self.active_robot]
         active_arm = self.active_arm
-
-        ac_dict: Dict = {}
+        grasp_cmd = 1 if state["grasp"] else -1
+        ac_dict: Dict[str, np.ndarray] = {}
 
         for arm in robot.arms:
-            controller = robot.part_controllers[arm]
             gripper = robot.gripper[arm]
-            n_joints = len(controller.joint_indexes["joints"])
-            current_qpos = np.array(robot.sim.data.qpos[controller.qpos_index])
-
             if arm != active_arm:
-                # Hold inactive arms at their current configuration
-                ac_dict[f"{arm}_abs"] = current_qpos.copy()
-                ac_dict[f"{arm}_delta"] = np.zeros(n_joints)
-                ac_dict[arm] = current_qpos.copy()
-                ac_dict[f"{arm}_gripper"] = np.zeros(gripper.dof)
+                current_pos, current_rot = self._get_follower_base_pose(robot, arm)
+                ac_dict[f"{arm}_abs"] = np.concatenate([current_pos, T.quat2axisangle(T.mat2quat(current_rot))])
+                ac_dict[f"{arm}_delta"] = np.zeros(6, dtype=np.float64)
+                ac_dict[arm] = ac_dict[f"{arm}_abs"].copy()
+                ac_dict[f"{arm}_gripper"] = np.zeros(gripper.dof, dtype=np.float64)
                 continue
 
-            target_qpos = self._map_leader_to_follower(leader_qpos, robot, arm)
-            delta_qpos = (target_qpos - current_qpos) * self.joint_sensitivity
-
-            ac_dict[f"{arm}_abs"] = target_qpos
-            ac_dict[f"{arm}_delta"] = delta_qpos
-            ac_dict[arm] = target_qpos
+            arm_action = self._build_pose_action(robot, arm)
+            ac_dict[f"{arm}_abs"] = arm_action["abs"]
+            ac_dict[f"{arm}_delta"] = arm_action["delta"]
+            ac_dict[arm] = arm_action["abs"].copy()
 
             if hasattr(gripper, "grasp_qpos"):
                 ac_dict[f"{arm}_gripper"] = gripper.grasp_qpos[grasp_cmd]
             else:
-                ac_dict[f"{arm}_gripper"] = np.array([grasp_cmd] * gripper.dof)
+                ac_dict[f"{arm}_gripper"] = np.array([grasp_cmd] * gripper.dof, dtype=np.float64)
 
         return ac_dict
-
-    # ------------------------------------------------------------------
-    # Joint mapping / clamping
-    # ------------------------------------------------------------------
-
-    def _map_leader_to_follower(
-        self, leader_qpos: np.ndarray, robot, arm: str
-    ) -> np.ndarray:
-        """
-        Map raw leader joint positions to follower joint targets.
-
-        The default implementation is a 1-to-1 identity mapping (same number
-        of joints assumed) with limit clamping.  Override to add per-joint
-        scaling, sign flips, or index remapping when leader and follower
-        kinematic chains differ.
-
-        Args:
-            leader_qpos: Joint angles from the leader, shape ``(n,)`` in rad.
-            robot: The follower robot object.
-            arm: Name of the arm being controlled.
-
-        Returns:
-            np.ndarray: Target joint positions for the follower, shape ``(n,)``.
-        """
-        controller = robot.part_controllers[arm]
-        target = np.array(leader_qpos, dtype=float)
-
-        jnt_range = robot.sim.model.jnt_range[controller.joint_indexes["joints"]]
-        lo = jnt_range[:, 0]
-        hi = jnt_range[:, 1]
-
-        margin = (hi - lo) * (1.0 - self.joint_limits_safety_factor) / 2.0
-        target = np.clip(target, lo + margin, hi - margin)
-
-        return target
 
 
 class ROS2LeaderArm(LeaderArm):
     """
-    LeaderArm implementation that reads joint positions from a ROS 2 topic.
+    ROS2-backed leader arm device.
 
-    Subscribes to a ``sensor_msgs/msg/JointState`` topic and extracts positions
-    for a caller-specified ordered list of joint names.  ROS 2 is spun in a
-    background daemon thread so it does not block the teleoperation loop.
-
-    Optionally, a *gripper joint* can be designated so that the hardware finger
-    position drives the grasp state automatically (instead of the keyboard
-    spacebar toggle).  When ``gripper_joint`` is set, the grasp state is
-    updated every time a new message arrives: the gripper is considered
-    *closed* whenever the joint position is below ``gripper_close_threshold``.
-
-    Args:
-        env: The robosuite environment containing the follower robot(s).
-        topic (str): ROS 2 topic name publishing ``JointState`` messages.
-        joint_names (List[str]): Ordered list of joint names whose positions
-            are returned by :meth:`get_leader_joint_positions`.  Defaults to
-            the seven standard Trossen arm joints (waist → gripper), excluding
-            the finger pair.
-        node_name (str): Name given to the ROS 2 node created internally.
-        gripper_joint (str | None): Name of a joint whose position is used to
-            infer grasp state.  When ``None`` (default) the keyboard spacebar
-            toggle is used instead.
-        gripper_close_threshold (float): Position threshold (rad) below which
-            ``gripper_joint`` is considered closed.  Ignored when
-            ``gripper_joint`` is ``None``.
-        qos_depth (int): History depth for the ROS 2 subscription QoS profile.
-        **kwargs: Forwarded verbatim to :class:`LeaderArm`.
-
-    Example::
-
-        device = ROS2LeaderArm(
-            env,
-            topic="/leader/joint_states",
-            joint_names=["waist", "shoulder", "elbow",
-                         "forearm_roll", "wrist_angle", "wrist_rotate"],
-            gripper_joint="gripper",
-            gripper_close_threshold=0.0,
-        )
-        device.start_control()
-        while True:
-            ac_dict = device.input2action()
-            if ac_dict is None:
-                break
-            env.step(robot.create_action_vector(ac_dict))
-        device.close()
+    Generic ROS2 instances expose the raw leader joints but do not know how to
+    compute FK unless a subclass overrides `get_leader_eef_pose()`.
     """
 
-    #: Default joint name order for a 7-DOF Trossen arm (gripper included).
     DEFAULT_JOINT_NAMES: List[str] = [
         "waist",
         "shoulder",
@@ -402,7 +356,7 @@ class ROS2LeaderArm(LeaderArm):
         env,
         topic: str = "/joint_states",
         joint_names: Optional[List[str]] = None,
-        node_name: str = "robosuite_leader_arm",
+        node_name: str = "robosuite_leader_arm_eef",
         gripper_joint: Optional[str] = None,
         gripper_close_threshold: float = 0.0,
         qos_depth: int = 10,
@@ -420,13 +374,9 @@ class ROS2LeaderArm(LeaderArm):
                 "Source your ROS 2 workspace and ensure the packages are installed."
             ) from exc
 
-        self._joint_names: List[str] = (
-            joint_names if joint_names is not None else list(self.DEFAULT_JOINT_NAMES)
-        )
-        self._gripper_joint: Optional[str] = gripper_joint
-        self._gripper_close_threshold: float = gripper_close_threshold
-
-        # Latest positions keyed by joint name; protected by _lock.
+        self._joint_names = joint_names if joint_names is not None else list(self.DEFAULT_JOINT_NAMES)
+        self._gripper_joint = gripper_joint
+        self._gripper_close_threshold = float(gripper_close_threshold)
         self._positions: Dict[str, float] = {}
         self._lock = threading.Lock()
 
@@ -440,29 +390,17 @@ class ROS2LeaderArm(LeaderArm):
             self._joint_state_callback,
             qos_depth,
         )
-
-        self._spin_thread = threading.Thread(
-            target=self._spin, name="ros2_leader_arm_spin", daemon=True
-        )
+        self._spin_thread = threading.Thread(target=self._spin, name="ros2_leader_arm_spin", daemon=True)
         self._spin_thread.start()
 
-    # ------------------------------------------------------------------
-    # ROS 2 internals
-    # ------------------------------------------------------------------
-
     def _joint_state_callback(self, msg) -> None:
-        """Store the latest position for every joint reported in the message."""
-        incoming: Dict[str, float] = dict(zip(msg.name, msg.position))
-
+        incoming = dict(zip(msg.name, msg.position))
         with self._lock:
             self._positions.update(incoming)
-
-            # Derive grasp state from hardware when a gripper joint is given.
-            if self._gripper_joint is not None:
+            if self._gripper_joint is not None and self.grasp_states:
                 gripper_pos = self._positions.get(self._gripper_joint)
                 if gripper_pos is not None:
                     closed = gripper_pos < self._gripper_close_threshold
-                    # Write through to all arms of the active robot.
                     for arm_idx in range(len(self.grasp_states[self.active_robot])):
                         self.grasp_states[self.active_robot][arm_idx] = closed
 
@@ -471,45 +409,27 @@ class ROS2LeaderArm(LeaderArm):
 
         rclpy.spin(self._node)
 
-    # ------------------------------------------------------------------
-    # LeaderArm interface
-    # ------------------------------------------------------------------
-
     def get_leader_joint_positions(self) -> np.ndarray:
-        """
-        Return an array of joint positions (rad) in the order of
-        :attr:`joint_names`.
-
-        Joints that have not yet been received default to ``0.0``.
-
-        Returns:
-            np.ndarray: Shape ``(len(joint_names),)``, dtype ``float64``.
-        """
         with self._lock:
             positions = [self._positions.get(name, 0.0) for name in self._joint_names]
-        return np.array(positions, dtype=np.float64)
+        return self._apply_joint_affine_map(np.asarray(positions, dtype=np.float64))
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
+    def get_leader_eef_pose(self) -> Tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError(
+            "Generic ROS2LeaderArm does not know the leader arm kinematics. "
+            "Use TrossenArmLeaderArm or override get_leader_eef_pose()."
+        )
 
     @property
     def joint_names(self) -> List[str]:
-        """Ordered list of joint names read from the ROS 2 topic."""
         return list(self._joint_names)
 
     @property
     def latest_positions(self) -> Dict[str, float]:
-        """Snapshot of the most recent position for every received joint."""
         with self._lock:
             return dict(self._positions)
 
-    # ------------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------------
-
     def close(self) -> None:
-        """Destroy the ROS 2 node and shut down the rclpy context."""
         import rclpy
 
         self._node.destroy_node()
@@ -518,69 +438,9 @@ class ROS2LeaderArm(LeaderArm):
 
 
 class TrossenArmLeaderArm(ROS2LeaderArm):
-    """
-    Concrete ROS 2 leader arm for Trossen Robotics single-arm hardware.
+    """ROS2 leader arm backed by a VX300S shadow FK model."""
 
-    Reads joint positions from a ``sensor_msgs/msg/JointState`` topic and maps
-    them to a robosuite follower robot following the qpos layout described in
-    ``TrossenAIStationaryTask.before_step`` (``trossen_arm_mujoco/sim_env.py``):
-
-    .. code-block:: text
-
-        HW joint name    HW msg idx  Sim qpos idx  Role
-        ──────────────────────────────────────────────────────────
-        waist                 0           0         arm joint
-        shoulder              1           1         arm joint
-        elbow                 2           2         arm joint
-        forearm_roll          3           3         arm joint
-        wrist_angle           4           4         arm joint
-        wrist_rotate          5           5         arm joint
-        gripper               6           –         raw motor encoder (unused)
-        left_finger           7           7         left_carriage_joint (actuated)
-        right_finger          8           6         right_carriage_joint (coupled)
-        ──────────────────────────────────────────────────────────
-
-    :meth:`get_leader_joint_positions` returns **only the 6 arm joints**
-    (waist → wrist_rotate), matching the DOF expected by the
-    ``JOINT_POSITION`` controller on the follower.
-
-    Grasp state is derived from ``left_finger`` — the actuated carriage joint
-    in both hardware and simulation.  The gripper is treated as **closed**
-    whenever ``left_finger < gripper_close_threshold``.
-
-    Args:
-        env: The robosuite environment containing the follower robot(s).
-        topic (str): ROS 2 topic publishing ``sensor_msgs/msg/JointState``.
-        gripper_close_threshold (float): ``left_finger`` position (rad) below
-            which the gripper is treated as closed.  Defaults to ``0.0``.
-        **kwargs: Forwarded verbatim to :class:`ROS2LeaderArm`.
-
-    Example::
-
-        device = TrossenArmLeaderArm(
-            env,
-            topic="/leader/joint_states",
-            gripper_close_threshold=0.0,
-        )
-        obs = env.reset()
-        device.start_control()
-        while True:
-            ac_dict = device.input2action()
-            if ac_dict is None:
-                break
-            env.step(robot.create_action_vector(ac_dict))
-        device.close()
-    """
-
-    #: The 6-DOF arm joints forwarded to the JOINT_POSITION controller.
-    DEFAULT_JOINT_NAMES: List[str] = [
-        "waist",
-        "shoulder",
-        "elbow",
-        "forearm_roll",
-        "wrist_angle",
-        "wrist_rotate",
-    ]
+    DEFAULT_JOINT_NAMES: List[str] = list(_TrossenShadowKinematics.JOINT_NAMES)
 
     def __init__(
         self,
@@ -589,90 +449,67 @@ class TrossenArmLeaderArm(ROS2LeaderArm):
         gripper_close_threshold: float = 0.0,
         **kwargs,
     ):
-        kwargs.setdefault("node_name", "robosuite_trossen_leader")
+        kwargs.setdefault("node_name", "robosuite_trossen_leader_eef")
         super().__init__(
             env,
             topic=topic,
-            # Fix arm joint names; finger joints are outside the controller DOF.
             joint_names=list(self.DEFAULT_JOINT_NAMES),
-            # left_finger is the actuated carriage joint (sim qpos index 7).
             gripper_joint="left_finger",
             gripper_close_threshold=gripper_close_threshold,
             **kwargs,
         )
+        self._shadow_fk = _TrossenShadowKinematics()
+
+    def get_leader_eef_pose(self) -> Tuple[np.ndarray, np.ndarray]:
+        return self._shadow_fk.forward(self.get_leader_joint_positions())
 
 
 def main() -> None:
-    """
-    Subscribe to a ROS 2 ``JointState`` topic, step the **Lift** task (default)
-    with **JOINT_POSITION** control, and show a live viewer.
-
-    Run from the repo root::
-
-        python -m robosuite.devices.leaderarm --topic /your/joint_states
-
-    Requires ``rclpy``, ``sensor_msgs``, and a running publisher on the topic.
-    """
     import argparse
     import time
     from copy import deepcopy
 
     parser = argparse.ArgumentParser(
-        description="Teleop test: ROS leader arm → Lift (or chosen env) with optional viewer."
-    )
-    parser.add_argument(
-        "--impl",
-        choices=("trossen", "ros2"),
-        default="trossen",
-        help="trossen: TrossenArmLeaderArm (left_finger → grasp). "
-        "ros2: generic ROS2LeaderArm; use --gripper-joint for hardware grasp.",
+        description="Teleop test: physical Trossen leader arm -> robosuite OSC_POSE / FABRIC_OSC_POSE follower."
     )
     parser.add_argument("--topic", type=str, default="/joint_states", help="sensor_msgs/JointState topic")
     parser.add_argument("--period", type=float, default=0.5, help="Seconds between diagnostic prints")
     parser.add_argument("--environment", type=str, default="Lift")
-    parser.add_argument("--robot", type=str, default="UR5e") # Panda
+    parser.add_argument("--robot", type=str, default="UR5e")
+    parser.add_argument("--position-scale", type=float, default=1.0, help="Scale applied to leader EEF translation")
+    parser.add_argument("--orientation-scale", type=float, default=1.0, help="Scale applied to leader EEF rotation")
     parser.add_argument(
-        "--no-render",
-        action="store_true",
-        help="Headless (no on-screen window). Still steps the simulation.",
-    )
-    parser.add_argument(
-        "--renderer",
-        type=str,
-        default="mjviewer",
-        choices=("mjviewer", "mujoco"),
-        help="On-screen backend (mjviewer = native MuJoCo; mujoco = OpenCV window).",
-    )
-    parser.add_argument(
-        "--render-camera",
-        type=str,
-        default="frontview",
-        help="Camera name for the viewer (Lift default scene camera is often frontview or agentview).",
-    )
-    parser.add_argument(
-        "--control-freq",
-        type=int,
-        default=20,
-        help="Simulation stepping rate (Hz) while teleoperating.",
-    )
-    parser.add_argument(
-        "--refactor-arm-names",
-        nargs="+",
-        default=["right"],
-        help="Arm keys when building the composite JOINT_POSITION config (single-arm: right).",
-    )
-    parser.add_argument(
-        "--gripper-close-threshold",
+        "--teleop-scale-shoulder",
         type=float,
-        default=0.0,
-        help="Joint position below this (rad) counts as closed (trossen: left_finger; ros2: if --gripper-joint set).",
+        default=None,
+        help="Optional affine scale for the leader shoulder joint before FK. Default: 1.12 for VX300S, else 1.0.",
     )
     parser.add_argument(
-        "--gripper-joint",
-        type=str,
+        "--teleop-scale-elbow",
+        type=float,
         default=None,
-        help="(ros2 only) Joint name for grasp; omit to use keyboard spacebar toggle for grasp.",
+        help="Optional affine scale for the leader elbow joint before FK. Default: 1.12 for VX300S, else 1.0.",
     )
+    parser.add_argument(
+        "--teleop-scale-pivot",
+        type=float,
+        nargs=6,
+        metavar=("w", "sh", "el", "fr", "wa", "wr"),
+        default=None,
+        help="Optional pivot (rad) for the leader joint affine map before FK.",
+    )
+    parser.add_argument("--no-render", action="store_true", help="Headless (no on-screen window).")
+    parser.add_argument("--renderer", type=str, default="mjviewer", choices=("mjviewer", "mujoco"))
+    parser.add_argument("--render-camera", type=str, default="frontview")
+    parser.add_argument("--control-freq", type=int, default=20)
+    parser.add_argument("--refactor-arm-names", nargs="+", default=["right"])
+    parser.add_argument(
+        "--arm-input-type",
+        choices=("absolute", "delta"),
+        default="absolute",
+        help="Follower OSC input type. Absolute is recommended for pose-mapped teleop.",
+    )
+    parser.add_argument("--gripper-close-threshold", type=float, default=0.0)
     args = parser.parse_args()
 
     import robosuite as suite
@@ -680,7 +517,12 @@ def main() -> None:
     from robosuite.controllers.composite.composite_controller import WholeBody
     from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
 
-    arm_part_config = load_part_controller_config(default_controller="JOINT_POSITION")
+    if args.teleop_scale_shoulder is None:
+        args.teleop_scale_shoulder = 1.12 if args.robot == "VX300S" else 1.0
+    if args.teleop_scale_elbow is None:
+        args.teleop_scale_elbow = 1.12 if args.robot == "VX300S" else 1.0
+
+    arm_part_config = load_part_controller_config(default_controller="OSC_POSE")
     controller_config = refactor_composite_controller_config(
         arm_part_config,
         args.robot,
@@ -688,8 +530,8 @@ def main() -> None:
     )
     for arm in args.refactor_arm_names:
         arm_cfg = controller_config.get("body_parts", {}).get(arm)
-        if isinstance(arm_cfg, dict) and arm_cfg.get("type") == "JOINT_POSITION":
-            arm_cfg["input_type"] = "absolute"
+        if isinstance(arm_cfg, dict) and arm_cfg.get("type") in {"OSC_POSE", "FABRIC_OSC_POSE"}:
+            arm_cfg["input_type"] = args.arm_input_type
 
     env = suite.make(
         args.environment,
@@ -708,21 +550,21 @@ def main() -> None:
     if not args.no_render:
         env.render()
 
-    if args.impl == "trossen":
-        device: LeaderArm = TrossenArmLeaderArm(
-            env,
-            topic=args.topic,
-            gripper_close_threshold=args.gripper_close_threshold,
-        )
-    else:
-        ros2_kw: Dict = dict(env=env, topic=args.topic)
-        if args.gripper_joint:
-            ros2_kw["gripper_joint"] = args.gripper_joint
-            ros2_kw["gripper_close_threshold"] = args.gripper_close_threshold
-        device = ROS2LeaderArm(**ros2_kw)
+    teleop_scale = np.array([1.0, args.teleop_scale_shoulder, args.teleop_scale_elbow, 1.0, 1.0, 1.0], dtype=float)
+    teleop_kw: Dict[str, object] = dict(
+        env=env,
+        topic=args.topic,
+        position_scale=args.position_scale,
+        orientation_scale=args.orientation_scale,
+        leader_joint_scale=teleop_scale,
+        gripper_close_threshold=args.gripper_close_threshold,
+    )
+    if args.teleop_scale_pivot is not None:
+        teleop_kw["leader_joint_scale_pivot"] = tuple(args.teleop_scale_pivot)
+    device = TrossenArmLeaderArm(**teleop_kw)
 
     device.start_control()
-    names: Optional[List[str]] = getattr(device, "joint_names", None)
+    names = getattr(device, "joint_names", None)
 
     def _prev_gripper_actions():
         return [
@@ -737,28 +579,22 @@ def main() -> None:
     all_prev_gripper_actions = _prev_gripper_actions()
 
     print(
-        f"Listening on {args.topic!r} ({args.impl}); "
+        f"Listening on {args.topic!r}; "
+        f"arm_input_type={args.arm_input_type!r}; "
         f"render={'off' if args.no_render else args.renderer}; "
         f"prints every {args.period} s. Press q to reset pose. Ctrl+C to exit.\n"
     )
 
-    dt = 1.0 / float(args.control_freq)
-    last_print = time.monotonic()
-
     try:
+        last_print = 0.0
         while True:
-            loop_t0 = time.monotonic()
             input_ac_dict = device.input2action()
             if input_ac_dict is None:
-                env.reset()
-                device.start_control()
-                all_prev_gripper_actions = _prev_gripper_actions()
-                if not args.no_render:
-                    env.render()
-                continue
+                print("\nReset requested. Exiting teleop loop.")
+                break
 
-            active_robot_model = env.robots[device.active_robot]
             action_dict = deepcopy(input_ac_dict)
+            active_robot_model = env.robots[device.active_robot]
             for arm in active_robot_model.arms:
                 if isinstance(active_robot_model.composite_controller, WholeBody):
                     controller_input_type = active_robot_model.composite_controller.joint_action_policy.input_type
@@ -783,32 +619,23 @@ def main() -> None:
             if not args.no_render:
                 env.render()
 
-            now = time.monotonic()
+            now = time.time()
             if now - last_print >= args.period:
+                last_print = now
                 state = device.get_controller_state()
                 jp = state["joint_positions"]
-                line_parts = []
-                if names is not None and len(names) == len(jp):
-                    line_parts.append(
-                        "joints: " + ", ".join(f"{n}={v:.4f}" for n, v in zip(names, jp))
-                    )
+                if names is not None:
+                    joint_msg = ", ".join(f"{n}={v:+.3f}" for n, v in zip(names, jp))
                 else:
-                    line_parts.append("joints: " + np.array2string(jp, precision=4, separator=", "))
-                line_parts.append(f"grasp (closed)={state['grasp']}")
-                line_parts.append(f"reset_flag={state['reset']}")
-                print(time.strftime("%H:%M:%S"), "|", " | ".join(line_parts), flush=True)
-                last_print = now
+                    joint_msg = np.array2string(jp, precision=3, floatmode="fixed")
+                eef_pos = np.array2string(state["eef_pos"], precision=3, floatmode="fixed")
+                print(f"[leader joints] {joint_msg}")
+                print(f"[leader eef] pos={eef_pos}")
 
-            elapsed = time.monotonic() - loop_t0
-            sleep_t = dt - elapsed
-            if sleep_t > 0:
-                time.sleep(sleep_t)
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\nInterrupted by user.")
     finally:
-        closer = getattr(device, "close", None)
-        if closer is not None:
-            closer()
+        device.close()
         env.close()
 
 
