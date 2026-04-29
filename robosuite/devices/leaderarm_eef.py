@@ -75,12 +75,26 @@ class LeaderArm:
         self,
         env,
         position_scale: float = 1.0,
+        position_scale_xyz: Optional[Sequence[float]] = None,
+        position_offset_xyz: Optional[Sequence[float]] = None,
         orientation_scale: float = 1.0,
         leader_joint_scale: Optional[Sequence[float]] = None,
         leader_joint_scale_pivot: Optional[Sequence[float]] = None,
     ):
         self.env = env
         self.position_scale = float(position_scale)
+        if position_scale_xyz is None:
+            self.position_scale_xyz = np.full(3, self.position_scale, dtype=np.float64)
+        else:
+            self.position_scale_xyz = np.asarray(position_scale_xyz, dtype=np.float64)
+            if self.position_scale_xyz.shape != (3,):
+                raise ValueError(f"position_scale_xyz must have shape (3,); got {self.position_scale_xyz.shape}")
+        if position_offset_xyz is None:
+            self.position_offset_xyz = np.zeros(3, dtype=np.float64)
+        else:
+            self.position_offset_xyz = np.asarray(position_offset_xyz, dtype=np.float64)
+            if self.position_offset_xyz.shape != (3,):
+                raise ValueError(f"position_offset_xyz must have shape (3,); got {self.position_offset_xyz.shape}")
         self.orientation_scale = float(orientation_scale)
         self._leader_joint_scale = None if leader_joint_scale is None else np.asarray(leader_joint_scale, dtype=float)
         self._leader_joint_scale_pivot = (
@@ -231,7 +245,7 @@ class LeaderArm:
         anchor_leader_pos, anchor_leader_rot = self._leader_anchor_pose[key]
         anchor_follower_pos_base, anchor_follower_rot_base = self._follower_anchor_pose[key]
 
-        delta_pos_base = self.position_scale * (leader_pos - anchor_leader_pos)
+        delta_pos_base = self.position_scale_xyz * (leader_pos - anchor_leader_pos) + self.position_offset_xyz
         rel_rot = leader_rot @ anchor_leader_rot.T
         rel_rotvec = T.quat2axisangle(T.mat2quat(rel_rot))
         rel_rot_scaled = T.quat2mat(T.axisangle2quat(self.orientation_scale * rel_rotvec))
@@ -477,6 +491,27 @@ def main() -> None:
     parser.add_argument("--environment", type=str, default="Lift")
     parser.add_argument("--robot", type=str, default="UR5e")
     parser.add_argument("--position-scale", type=float, default=1.0, help="Scale applied to leader EEF translation")
+    parser.add_argument("--position-scale-x", type=float, default=None, help="Per-axis x scale for leader EEF translation")
+    parser.add_argument("--position-scale-y", type=float, default=None, help="Per-axis y scale for leader EEF translation")
+    parser.add_argument("--position-scale-z", type=float, default=None, help="Per-axis z scale for leader EEF translation")
+    parser.add_argument(
+        "--position-offset-x",
+        type=float,
+        default=0.0,
+        help="Additive x offset in follower base frame after scaled leader translation",
+    )
+    parser.add_argument(
+        "--position-offset-y",
+        type=float,
+        default=0.0,
+        help="Additive y offset in follower base frame after scaled leader translation",
+    )
+    parser.add_argument(
+        "--position-offset-z",
+        type=float,
+        default=0.0,
+        help="Additive z offset in follower base frame after scaled leader translation",
+    )
     parser.add_argument("--orientation-scale", type=float, default=1.0, help="Scale applied to leader EEF rotation")
     parser.add_argument(
         "--teleop-scale-shoulder",
@@ -551,10 +586,21 @@ def main() -> None:
         env.render()
 
     teleop_scale = np.array([1.0, args.teleop_scale_shoulder, args.teleop_scale_elbow, 1.0, 1.0, 1.0], dtype=float)
+    position_scale_xyz = np.array(
+        [
+            args.position_scale if args.position_scale_x is None else args.position_scale_x,
+            args.position_scale if args.position_scale_y is None else args.position_scale_y,
+            args.position_scale if args.position_scale_z is None else args.position_scale_z,
+        ],
+        dtype=float,
+    )
+    position_offset_xyz = np.array([args.position_offset_x, args.position_offset_y, args.position_offset_z], dtype=float)
     teleop_kw: Dict[str, object] = dict(
         env=env,
         topic=args.topic,
         position_scale=args.position_scale,
+        position_scale_xyz=position_scale_xyz,
+        position_offset_xyz=position_offset_xyz,
         orientation_scale=args.orientation_scale,
         leader_joint_scale=teleop_scale,
         gripper_close_threshold=args.gripper_close_threshold,
