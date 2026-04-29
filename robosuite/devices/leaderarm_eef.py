@@ -78,6 +78,7 @@ class LeaderArm:
         position_scale_xyz: Optional[Sequence[float]] = None,
         position_offset_xyz: Optional[Sequence[float]] = None,
         orientation_scale: float = 1.0,
+        rotation_offset_rpy: Optional[Sequence[float]] = None,
         leader_joint_scale: Optional[Sequence[float]] = None,
         leader_joint_scale_pivot: Optional[Sequence[float]] = None,
     ):
@@ -96,6 +97,13 @@ class LeaderArm:
             if self.position_offset_xyz.shape != (3,):
                 raise ValueError(f"position_offset_xyz must have shape (3,); got {self.position_offset_xyz.shape}")
         self.orientation_scale = float(orientation_scale)
+        if rotation_offset_rpy is None:
+            self.rotation_offset_mat = np.eye(3, dtype=np.float64)
+        else:
+            rpy = np.asarray(rotation_offset_rpy, dtype=np.float64)
+            if rpy.shape != (3,):
+                raise ValueError(f"rotation_offset_rpy must have shape (3,); got {rpy.shape}")
+            self.rotation_offset_mat = T.euler2mat(rpy)
         self._leader_joint_scale = None if leader_joint_scale is None else np.asarray(leader_joint_scale, dtype=float)
         self._leader_joint_scale_pivot = (
             None if leader_joint_scale_pivot is None else np.asarray(leader_joint_scale_pivot, dtype=float)
@@ -245,13 +253,15 @@ class LeaderArm:
         anchor_leader_pos, anchor_leader_rot = self._leader_anchor_pose[key]
         anchor_follower_pos_base, anchor_follower_rot_base = self._follower_anchor_pose[key]
 
-        delta_pos_base = self.position_scale_xyz * (leader_pos - anchor_leader_pos) + self.position_offset_xyz
+        delta_pos_leader = self.position_scale_xyz * (leader_pos - anchor_leader_pos)
         rel_rot = leader_rot @ anchor_leader_rot.T
         rel_rotvec = T.quat2axisangle(T.mat2quat(rel_rot))
         rel_rot_scaled = T.quat2mat(T.axisangle2quat(self.orientation_scale * rel_rotvec))
 
-        target_pos_base = anchor_follower_pos_base + delta_pos_base
-        target_rot_base = rel_rot_scaled @ anchor_follower_rot_base
+        # position_offset_xyz is applied in follower base frame, after the leader delta
+        target_pos_base = anchor_follower_pos_base + delta_pos_leader + self.position_offset_xyz
+        # rotation_offset_mat is applied in follower base frame as a constant bias rotation
+        target_rot_base = self.rotation_offset_mat @ rel_rot_scaled @ anchor_follower_rot_base
 
         base_pos = np.asarray(robot.sim.data.get_body_xpos(robot.robot_model.root_body), dtype=np.float64)
         base_rot = np.asarray(robot.sim.data.get_body_xmat(robot.robot_model.root_body), dtype=np.float64).reshape(3, 3)
@@ -514,6 +524,24 @@ def main() -> None:
     )
     parser.add_argument("--orientation-scale", type=float, default=1.0, help="Scale applied to leader EEF rotation")
     parser.add_argument(
+        "--rotation-offset-roll",
+        type=float,
+        default=0.0,
+        help="Constant roll offset (rad) added to target orientation in follower base frame",
+    )
+    parser.add_argument(
+        "--rotation-offset-pitch",
+        type=float,
+        default=0.0,
+        help="Constant pitch offset (rad) added to target orientation in follower base frame",
+    )
+    parser.add_argument(
+        "--rotation-offset-yaw",
+        type=float,
+        default=0.0,
+        help="Constant yaw offset (rad) added to target orientation in follower base frame",
+    )
+    parser.add_argument(
         "--teleop-scale-shoulder",
         type=float,
         default=None,
@@ -595,6 +623,9 @@ def main() -> None:
         dtype=float,
     )
     position_offset_xyz = np.array([args.position_offset_x, args.position_offset_y, args.position_offset_z], dtype=float)
+    rotation_offset_rpy = np.array(
+        [args.rotation_offset_roll, args.rotation_offset_pitch, args.rotation_offset_yaw], dtype=float
+    )
     teleop_kw: Dict[str, object] = dict(
         env=env,
         topic=args.topic,
@@ -602,6 +633,7 @@ def main() -> None:
         position_scale_xyz=position_scale_xyz,
         position_offset_xyz=position_offset_xyz,
         orientation_scale=args.orientation_scale,
+        rotation_offset_rpy=rotation_offset_rpy,
         leader_joint_scale=teleop_scale,
         gripper_close_threshold=args.gripper_close_threshold,
     )
@@ -609,6 +641,22 @@ def main() -> None:
         teleop_kw["leader_joint_scale_pivot"] = tuple(args.teleop_scale_pivot)
     device = TrossenArmLeaderArm(**teleop_kw)
 
+    anchor_delay_sec = 5
+    print("Simulation started. Hold the leader arm in the desired neutral pose.")
+    print("Anchor pose capture countdown:")
+    deadline = time.time() + anchor_delay_sec
+    last_printed = anchor_delay_sec
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        count = int(remaining) + 1
+        if count != last_printed:
+            print(f"  {count}...")
+            last_printed = count
+        if not args.no_render and env.viewer is not None:
+            env.viewer.update()
+    print("Capturing anchor pose now.")
     device.start_control()
     names = getattr(device, "joint_names", None)
 
