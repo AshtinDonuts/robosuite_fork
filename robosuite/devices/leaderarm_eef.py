@@ -79,6 +79,8 @@ class LeaderArm:
         position_offset_xyz: Optional[Sequence[float]] = None,
         orientation_scale: float = 1.0,
         rotation_offset_rpy: Optional[Sequence[float]] = None,
+        calibration_step: float = 0.01,
+        calibration_step_rot: float = 0.05,
         leader_joint_scale: Optional[Sequence[float]] = None,
         leader_joint_scale_pivot: Optional[Sequence[float]] = None,
     ):
@@ -98,12 +100,15 @@ class LeaderArm:
                 raise ValueError(f"position_offset_xyz must have shape (3,); got {self.position_offset_xyz.shape}")
         self.orientation_scale = float(orientation_scale)
         if rotation_offset_rpy is None:
-            self.rotation_offset_mat = np.eye(3, dtype=np.float64)
+            self._rotation_offset_rpy = np.zeros(3, dtype=np.float64)
         else:
             rpy = np.asarray(rotation_offset_rpy, dtype=np.float64)
             if rpy.shape != (3,):
                 raise ValueError(f"rotation_offset_rpy must have shape (3,); got {rpy.shape}")
-            self.rotation_offset_mat = T.euler2mat(rpy)
+            self._rotation_offset_rpy = rpy.copy()
+        self.rotation_offset_mat = T.euler2mat(self._rotation_offset_rpy)
+        self.calibration_step = float(calibration_step)
+        self.calibration_step_rot = float(calibration_step_rot)
         self._leader_joint_scale = None if leader_joint_scale is None else np.asarray(leader_joint_scale, dtype=float)
         self._leader_joint_scale_pivot = (
             None if leader_joint_scale_pivot is None else np.asarray(leader_joint_scale_pivot, dtype=float)
@@ -131,14 +136,42 @@ class LeaderArm:
                 return
             if not self.grasp_states:
                 return
+            # Special (non-char) keys
             if key == Key.space:
                 i, j = self.active_robot, self.active_arm_index
                 self.grasp_states[i][j] = not self.grasp_states[i][j]
+            elif key == Key.up:
+                self.position_offset_xyz[2] += self.calibration_step
+                self._print_calibration()
+            elif key == Key.down:
+                self.position_offset_xyz[2] -= self.calibration_step
+                self._print_calibration()
+            elif key == Key.left:
+                self.position_offset_xyz[1] -= self.calibration_step
+                self._print_calibration()
+            elif key == Key.right:
+                self.position_offset_xyz[1] += self.calibration_step
+                self._print_calibration()
+            # Char keys
             elif key.char == "s":
                 arms = self.all_robot_arms[self.active_robot]
                 self.active_arm_index = (self.active_arm_index + 1) % len(arms)
             elif key.char == "=":
                 self.active_robot = (self.active_robot + 1) % self.num_robots
+            elif key.char == "[":
+                self.position_offset_xyz[0] -= self.calibration_step
+                self._print_calibration()
+            elif key.char == "]":
+                self.position_offset_xyz[0] += self.calibration_step
+                self._print_calibration()
+            elif key.char == "o":
+                self._rotation_offset_rpy[1] -= self.calibration_step_rot
+                self._update_rotation_offset()
+                self._print_calibration()
+            elif key.char == "p":
+                self._rotation_offset_rpy[1] += self.calibration_step_rot
+                self._update_rotation_offset()
+                self._print_calibration()
         except AttributeError:
             pass
 
@@ -193,7 +226,23 @@ class LeaderArm:
         print_command("spacebar", "toggle gripper (open/close)")
         print_command("s", "switch active arm (if multi-armed robot)")
         print_command("=", "switch active robot (if multi-robot env)")
+        print_command("↑ / ↓", "online calib: shift virtual EEF +/- z")
+        print_command("← / →", "online calib: shift virtual EEF -/+ y")
+        print_command("[ / ]", "online calib: shift virtual EEF -/+ x")
+        print_command("o / p", "online calib: pitch -/+")
         print("")
+
+    def _update_rotation_offset(self) -> None:
+        self.rotation_offset_mat = T.euler2mat(self._rotation_offset_rpy)
+
+    def _print_calibration(self) -> None:
+        ox, oy, oz = self.position_offset_xyz
+        pitch_deg = np.degrees(self._rotation_offset_rpy[1])
+        print(
+            f"[calib] pos_offset=({ox:+.4f}, {oy:+.4f}, {oz:+.4f}) m  "
+            f"pitch={pitch_deg:+.1f}°",
+            flush=True,
+        )
 
     def _reset_internal_state(self):
         self.grasp_states = [[False] * len(arms) for arms in self.all_robot_arms]
@@ -573,6 +622,18 @@ def main() -> None:
         help="Follower OSC input type. Absolute is recommended for pose-mapped teleop.",
     )
     parser.add_argument("--gripper-close-threshold", type=float, default=0.0)
+    parser.add_argument(
+        "--calibration-step",
+        type=float,
+        default=0.01,
+        help="Position step size (m) per keypress for online calibration (default 1 cm)",
+    )
+    parser.add_argument(
+        "--calibration-step-rot",
+        type=float,
+        default=0.05,
+        help="Rotation step size (rad) per keypress for online pitch calibration (default ~3°)",
+    )
     args = parser.parse_args()
 
     import robosuite as suite
@@ -634,6 +695,8 @@ def main() -> None:
         position_offset_xyz=position_offset_xyz,
         orientation_scale=args.orientation_scale,
         rotation_offset_rpy=rotation_offset_rpy,
+        calibration_step=args.calibration_step,
+        calibration_step_rot=args.calibration_step_rot,
         leader_joint_scale=teleop_scale,
         gripper_close_threshold=args.gripper_close_threshold,
     )
