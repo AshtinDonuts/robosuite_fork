@@ -9,6 +9,7 @@ from robosuite.environments.manipulation.nut_assembly import NutAssembly
 from robosuite.environments.manipulation.pick_place import PickPlace
 from robosuite.environments.manipulation.door import Door
 from robosuite.environments.manipulation.wipe import Wipe
+from robosuite.environments.manipulation.empty import Empty
 from robosuite.environments.manipulation.table_pick import TablePick
 from robosuite.environments.manipulation.tool_hang import ToolHang
 from robosuite.environments.manipulation.two_arm_lift import TwoArmLift

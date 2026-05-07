@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../robomimic"
+		},
+		{
+			"path": "../../../pumafabrics"
+		}
+	],
+	"settings": {}
+}

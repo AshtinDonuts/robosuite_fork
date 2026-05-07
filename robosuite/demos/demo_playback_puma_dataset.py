@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Playback puma_dataset-style end-effector pose traces in robosuite.
 
@@ -8,7 +10,6 @@ This script expects an episode directory containing:
 Example:
     $ python demo_playback_puma_dataset.py --episode_dir /path/to/episode
 """
-
 import argparse
 import json
 import os
