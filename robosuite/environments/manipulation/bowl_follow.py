@@ -4,8 +4,9 @@ import numpy as np
 
 from robosuite.environments.manipulation.manipulation_env import ManipulationEnv
 from robosuite.models.arenas import TableArena
-from robosuite.models.objects import BowlObject
+from robosuite.models.objects import BowlObject, MujocoXMLObject
 from robosuite.models.tasks import ManipulationTask
+from robosuite.utils.mjcf_utils import xml_path_completion
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import UniformRandomSampler
 from robosuite.utils.transform_utils import convert_quat, quat_multiply
@@ -137,6 +138,9 @@ class BowlFollow(ManipulationEnv):
         wiping_gripper_scale (3-tuple): (sx, sy, sz) scale factors for the WipingGripper pad
             in its local coordinate frame. (1, 1, 1) leaves the gripper unchanged.
 
+        bowl_static (bool): If True, the bowl is welded to the world (no free joint): it does not
+            move when pushed, but collision geoms, friction, and contact forces still apply.
+
         placement_initializer (ObjectPositionSampler): if provided, will
             be used to place objects on every reset, else a UniformRandomSampler
             is used by default.
@@ -224,11 +228,12 @@ class BowlFollow(ManipulationEnv):
         reward_scale=1.0,
         reward_shaping=False,
         # bowl_scale=(3.0, 3.0, 3.0),
-        bowl_scale=(1.0, 1.0, 1.0),
+        bowl_scale=(2.0, 2.0, 1.0),  # @USER TODO
         # bowl_scale is now exposed as either:
         # Uniform: a scalar, e.g. bowl_scale=1.5
         # Non-uniform: a 3-vector (sx, sy, sz), e.g. bowl_scale=(1.0, 1.0, 1.0)
-        wiping_gripper_scale=(0.25, 0.5, 3.0),
+        wiping_gripper_scale=(0.25, 0.5, 3.0),  # @USER TODO
+        bowl_static=True, # @USER TODO
         placement_initializer=None,
         has_renderer=False,
         has_offscreen_renderer=True,
@@ -292,6 +297,8 @@ class BowlFollow(ManipulationEnv):
 
         # WipingGripper scale (sx, sy, sz) in pad-local coordinates
         self.wiping_gripper_scale = tuple(wiping_gripper_scale)
+
+        self.bowl_static = bool(bowl_static)
 
         # whether to use ground-truth object states
         self.use_object_obs = use_object_obs
@@ -389,7 +396,17 @@ class BowlFollow(ManipulationEnv):
         # Arena always gets set to zero origin
         mujoco_arena.set_origin([0, 0, 0])
 
-        self.bowl = BowlObject(name="bowl")
+        if self.bowl_static:
+            # Same mesh and collision as BowlObject, but no free joint: fixed in world, still collides.
+            self.bowl = MujocoXMLObject(
+                xml_path_completion("objects/bowl.xml"),
+                name="bowl",
+                joints=None,
+                obj_type="all",
+                duplicate_collision_geoms=False,
+            )
+        else:
+            self.bowl = BowlObject(name="bowl")
         if self.bowl_scale is not None:
             # Allow both uniform and non-uniform scaling
             if isinstance(self.bowl_scale, (int, float, np.floating, np.integer)):
@@ -513,12 +530,21 @@ class BowlFollow(ManipulationEnv):
             flip_xyzw = np.array([1.0, 0.0, 0.0, 0.0])
 
             # Loop through all objects and reset their positions
+            forward_needed = False
             for obj_pos, obj_quat, obj in object_placements.values():
                 # obj_quat is wxyz; compose with vertical flip (wxyz -> xyzw -> multiply -> wxyz)
                 obj_quat_xyzw = convert_quat(np.array(obj_quat), to="xyzw")
                 flipped_xyzw = quat_multiply(flip_xyzw, obj_quat_xyzw)
                 flipped_wxyz = convert_quat(flipped_xyzw, to="wxyz")
-                self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), flipped_wxyz]))
+                if len(obj.joints) == 0:
+                    bid = self.sim.model.body_name2id(obj.root_body)
+                    self.sim.model.body_pos[bid] = np.array(obj_pos)
+                    self.sim.model.body_quat[bid] = np.array(flipped_wxyz)
+                    forward_needed = True
+                else:
+                    self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), flipped_wxyz]))
+            if forward_needed:
+                self.sim.forward()
 
     def _get_eef_xpos(self, arm):
         """
