@@ -159,7 +159,7 @@ class BowlFollow(ManipulationEnv):
         use_object_obs=True,
         reward_scale=1.0,
         reward_shaping=False,
-        bowl_scale=(0.5, 1.5, 1.5),
+        bowl_scale=(3.0, 3.0, 3.0),
         # bowl_scale is now exposed as either:
         # Uniform: a scalar, e.g. bowl_scale=1.5
         # Non-uniform: a 3-vector (sx, sy, sz), e.g. bowl_scale=(1.3, 1.3, 0.8)

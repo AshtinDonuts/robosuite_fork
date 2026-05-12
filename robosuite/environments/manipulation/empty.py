@@ -1,3 +1,5 @@
+import xml.etree.ElementTree as ET
+
 from robosuite.environments.manipulation.manipulation_env import ManipulationEnv
 from robosuite.models.arenas import EmptyArena
 from robosuite.models.tasks import ManipulationTask
@@ -90,6 +92,16 @@ class Empty(ManipulationEnv):
 
         mujoco_arena = EmptyArena()
         mujoco_arena.set_origin([0, 0, 0])
+
+        ET.SubElement(
+            mujoco_arena.worldbody,
+            "site",
+            name="green_sphere_marker",
+            type="sphere",
+            size="0.05",
+            pos="1 0 0",
+            rgba="0 1 0 1",
+        )
 
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,

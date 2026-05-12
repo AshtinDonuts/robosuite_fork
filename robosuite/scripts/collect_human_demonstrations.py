@@ -381,7 +381,7 @@ if __name__ == "__main__":
         "--device",
         type=str,
         default="keyboard",
-        help="keyboard | spacemouse | dualsense | mjgui | trossen_leaderarm | ros2_leaderarm",
+        help="keyboard | spacemouse | dualsense | mjgui | trossen_leaderarm | ros2_leaderarm | trossen_leaderarm_eef",
     )
     parser.add_argument(
         "--pos-sensitivity",
@@ -538,9 +538,73 @@ if __name__ == "__main__":
         "(q_sim = pivot + scale * (q_leader - pivot)). "
         "Set to the hardware home pose to expand motion relative to that configuration.",
     )
+    # ── trossen_leaderarm_eef-specific arguments ──────────────────────────────
+    parser.add_argument(
+        "--leaderarm-eef-position-scale",
+        type=float,
+        default=1.0,
+        help="Uniform scale applied to leader EEF translation (trossen_leaderarm_eef).",
+    )
+    parser.add_argument(
+        "--leaderarm-eef-position-scale-x",
+        type=float,
+        default=None,
+        help="Per-axis x override for leader EEF translation scale (trossen_leaderarm_eef).",
+    )
+    parser.add_argument(
+        "--leaderarm-eef-position-scale-y",
+        type=float,
+        default=None,
+        help="Per-axis y override for leader EEF translation scale (trossen_leaderarm_eef).",
+    )
+    parser.add_argument(
+        "--leaderarm-eef-position-scale-z",
+        type=float,
+        default=None,
+        help="Per-axis z override for leader EEF translation scale (trossen_leaderarm_eef).",
+    )
+    parser.add_argument(
+        "--leaderarm-eef-position-offset",
+        type=float,
+        nargs=3,
+        metavar=("x", "y", "z"),
+        default=[0.0, 0.0, 0.0],
+        help="Additive (x, y, z) offset (m) in follower base frame after scaled leader "
+        "translation (trossen_leaderarm_eef). Default: 0 0 0.",
+    )
+    parser.add_argument(
+        "--leaderarm-eef-orientation-scale",
+        type=float,
+        default=1.0,
+        help="Scale applied to leader EEF rotation (trossen_leaderarm_eef).",
+    )
+    parser.add_argument(
+        "--leaderarm-eef-rotation-offset-rpy",
+        type=float,
+        nargs=3,
+        metavar=("roll", "pitch", "yaw"),
+        default=[0.0, 0.0, 0.0],
+        help="Constant (roll, pitch, yaw) offset (rad) added to target orientation in "
+        "follower base frame (trossen_leaderarm_eef). Default: 0 0 0.",
+    )
+    parser.add_argument(
+        "--leaderarm-eef-calibration-step",
+        type=float,
+        default=0.01,
+        help="Position step size (m) per arrow-key press for online calibration "
+        "(trossen_leaderarm_eef). Default: 0.01 m.",
+    )
+    parser.add_argument(
+        "--leaderarm-eef-calibration-step-rot",
+        type=float,
+        default=0.05,
+        help="Rotation step size (rad) per o/p key press for online pitch calibration "
+        "(trossen_leaderarm_eef). Default: ~3°.",
+    )
     args = parser.parse_args()
 
     _is_leaderarm_device = args.device in ("trossen_leaderarm", "ros2_leaderarm")
+    _is_eef_device = args.device == "trossen_leaderarm_eef"
 
     # VX300S shoulder/elbow joints have a different mechanical range than the
     # hardware encoder range; a gain of 1.12 compensates for this by default.
@@ -571,6 +635,15 @@ if __name__ == "__main__":
             _arm_part_cfg,
             _primary_robot,
             ["right"],  # VX300S (and most single-arm robots) use "right"
+        )
+    elif _is_eef_device and args.controller in (None, "OSC_POSE"):
+        # leaderarm_eef maps leader FK → follower EEF pose; requires a pose-based controller.
+        _arm_part_cfg = load_part_controller_config(default_controller="OSC_POSE")
+        _arm_part_cfg["input_type"] = "absolute"  # absolute EEF targets are recommended
+        controller_config = refactor_composite_controller_config(
+            _arm_part_cfg,
+            _primary_robot,
+            ["right"],
         )
     else:
         controller_config = load_composite_controller_config(
@@ -633,7 +706,7 @@ if __name__ == "__main__":
 
     # Match robosuite.devices.leaderarm main(): run one reset before starting the ROS
     # subscriber so JointState callbacks attach to the same sim/robot layout as teleop.
-    if args.device in ("trossen_leaderarm", "ros2_leaderarm"):
+    if args.device in ("trossen_leaderarm", "ros2_leaderarm", "trossen_leaderarm_eef"):
         env.reset()
         env.render()
 
@@ -709,10 +782,48 @@ if __name__ == "__main__":
             if args.leaderarm_joint_names is not None and len(args.leaderarm_joint_names) > 0:
                 _ros2_kw["joint_names"] = list(args.leaderarm_joint_names)
             device = ROS2LeaderArm(**_ros2_kw)
+    elif args.device == "trossen_leaderarm_eef":
+        try:
+            from robosuite.devices.leaderarm_eef import TrossenArmLeaderArm as TrossenArmLeaderArmEEF
+        except ImportError as exc:
+            raise ImportError(
+                "trossen_leaderarm_eef requires ROS 2 packages (rclpy, sensor_msgs) and pynput. "
+                "Source your ROS 2 workspace and install dependencies."
+            ) from exc
+        _teleop_scale = np.array(
+            [1.0, args.leaderarm_teleop_scale_shoulder, args.leaderarm_teleop_scale_elbow, 1.0, 1.0, 1.0],
+            dtype=float,
+        )
+        _position_scale_xyz = np.array(
+            [
+                args.leaderarm_eef_position_scale if args.leaderarm_eef_position_scale_x is None else args.leaderarm_eef_position_scale_x,
+                args.leaderarm_eef_position_scale if args.leaderarm_eef_position_scale_y is None else args.leaderarm_eef_position_scale_y,
+                args.leaderarm_eef_position_scale if args.leaderarm_eef_position_scale_z is None else args.leaderarm_eef_position_scale_z,
+            ],
+            dtype=float,
+        )
+        _eef_kw = dict(
+            env=env,
+            topic=args.leaderarm_topic,
+            position_scale=args.leaderarm_eef_position_scale,
+            position_scale_xyz=_position_scale_xyz,
+            position_offset_xyz=np.array(args.leaderarm_eef_position_offset, dtype=float),
+            orientation_scale=args.leaderarm_eef_orientation_scale,
+            rotation_offset_rpy=np.array(args.leaderarm_eef_rotation_offset_rpy, dtype=float),
+            calibration_step=args.leaderarm_eef_calibration_step,
+            calibration_step_rot=args.leaderarm_eef_calibration_step_rot,
+            leader_joint_scale=_teleop_scale,
+            gripper_close_threshold=args.leaderarm_gripper_close_threshold,
+        )
+        if args.leaderarm_teleop_scale_pivot is not None:
+            _eef_kw["leader_joint_scale_pivot"] = tuple(args.leaderarm_teleop_scale_pivot)
+        if args.leaderarm_node_name is not None:
+            _eef_kw["node_name"] = args.leaderarm_node_name
+        device = TrossenArmLeaderArmEEF(**_eef_kw)
     else:
         raise Exception(
             "Invalid device. Choose keyboard, spacemouse, dualsense, mjgui, "
-            "trossen_leaderarm, or ros2_leaderarm. "
+            "trossen_leaderarm, ros2_leaderarm, or trossen_leaderarm_eef. "
             f"Got: {args.device!r}"
         )
 
