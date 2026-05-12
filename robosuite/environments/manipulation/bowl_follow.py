@@ -11,6 +11,68 @@ from robosuite.utils.placement_samplers import UniformRandomSampler
 from robosuite.utils.transform_utils import convert_quat, quat_multiply
 
 
+def _scale_wiping_gripper(root, sx, sy, sz):
+    """
+    Non-uniformly scale every geometric element inside a WipingGripper XML tree.
+
+    The helper rescales in the body-local coordinate frame of the gripper pad.
+    Positions of bodies, geoms and sites are multiplied component-wise by
+    (sx, sy, sz).  Sizes are rescaled according to geometry type:
+
+        box       – each half-extent is multiplied by the matching scale factor
+        sphere    – radius is multiplied by the cube-root of sx*sy*sz
+        capsule   – radius by sqrt(sx*sy), half-length by sz
+        cylinder  – same as capsule
+        plane     – half-widths scaled by sx and sy; spacing by sz
+
+    Args:
+        root: XML Element that is the root of the gripper worldbody tree
+              (e.g. ``self.robots[0].gripper.worldbody``).
+        sx (float): scale along the gripper's local X axis.
+        sy (float): scale along the gripper's local Y axis.
+        sz (float): scale along the gripper's local Z axis.
+    """
+    scale = np.array([sx, sy, sz], dtype=float)
+    sphere_scale = float((sx * sy * sz) ** (1.0 / 3.0))
+    radial_scale = float(np.sqrt(sx * sy))
+
+    def _rescale_pos(elem):
+        pos = elem.get("pos")
+        if pos:
+            p = np.array([float(v) for v in pos.split()])
+            if len(p) == 3:
+                elem.set("pos", " ".join(f"{v:.8g}" for v in p * scale))
+
+    def _rescale_size(elem):
+        raw = elem.get("size")
+        if not raw:
+            return
+        parts = [float(v) for v in raw.split()]
+        gtype = elem.get("type", "sphere").lower()
+        if gtype == "box" and len(parts) == 3:
+            new_parts = [parts[0] * sx, parts[1] * sy, parts[2] * sz]
+        elif gtype == "sphere" and len(parts) == 1:
+            new_parts = [parts[0] * sphere_scale]
+        elif gtype in ("capsule", "cylinder") and len(parts) == 2:
+            new_parts = [parts[0] * radial_scale, parts[1] * sz]
+        elif gtype == "plane" and len(parts) == 3:
+            new_parts = [parts[0] * sx, parts[1] * sy, parts[2] * sz]
+        else:
+            new_parts = [v * sphere_scale for v in parts]
+        elem.set("size", " ".join(f"{v:.8g}" for v in new_parts))
+
+    for geom in root.iter("geom"):
+        _rescale_pos(geom)
+        _rescale_size(geom)
+
+    for body in root.iter("body"):
+        _rescale_pos(body)
+
+    for site in root.iter("site"):
+        _rescale_pos(site)
+        _rescale_size(site)
+
+
 class BowlFollow(ManipulationEnv):
     """
     Tabletop environment with a bowl mesh object. There is no task completion signal based on lifting height:
@@ -71,6 +133,9 @@ class BowlFollow(ManipulationEnv):
         reward_scale (None or float): Scales the reward by this factor when not None.
 
         reward_shaping (bool): if True, use dense rewards (reaching and grasping only).
+
+        wiping_gripper_scale (3-tuple): (sx, sy, sz) scale factors for the WipingGripper pad
+            in its local coordinate frame. (1, 1, 1) leaves the gripper unchanged.
 
         placement_initializer (ObjectPositionSampler): if provided, will
             be used to place objects on every reset, else a UniformRandomSampler
@@ -163,6 +228,7 @@ class BowlFollow(ManipulationEnv):
         # bowl_scale is now exposed as either:
         # Uniform: a scalar, e.g. bowl_scale=1.5
         # Non-uniform: a 3-vector (sx, sy, sz), e.g. bowl_scale=(1.0, 1.0, 1.0)
+        wiping_gripper_scale=(0.25, 0.5, 3.0),
         placement_initializer=None,
         has_renderer=False,
         has_offscreen_renderer=True,
@@ -223,6 +289,9 @@ class BowlFollow(ManipulationEnv):
 
         # bowl scale factor (uniform scalar or xyz 3-vector)
         self.bowl_scale = bowl_scale
+
+        # WipingGripper scale (sx, sy, sz) in pad-local coordinates
+        self.wiping_gripper_scale = tuple(wiping_gripper_scale)
 
         # whether to use ground-truth object states
         self.use_object_obs = use_object_obs
@@ -302,6 +371,13 @@ class BowlFollow(ManipulationEnv):
         # Adjust base pose accordingly
         xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
         self.robots[0].robot_model.set_base_xpos(xpos)
+
+        # Scale the WipingGripper before merging into ManipulationTask.
+        # self.robots[0].gripper is a dict {arm_name: GripperModel}.
+        sx, sy, sz = self.wiping_gripper_scale
+        if not np.allclose([sx, sy, sz], [1.0, 1.0, 1.0]):
+            for gripper in self.robots[0].gripper.values():
+                _scale_wiping_gripper(gripper.worldbody, sx, sy, sz)
 
         # load model for table top workspace
         mujoco_arena = TableArena(
