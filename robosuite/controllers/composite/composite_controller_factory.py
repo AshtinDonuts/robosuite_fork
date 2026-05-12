@@ -105,7 +105,7 @@ def load_composite_controller_config(controller: Optional[str] = None, robot: Op
         else:
             assert (
                 controller in REGISTERED_COMPOSITE_CONTROLLERS_DICT
-            ), f"Controller {controller} not found in COMPOSITE_CONTROLLERS_DICT"
+            ), f"Controller {controller} not found in COMPOSITE_CONTROLLERS_DICT: {REGISTERED_COMPOSITE_CONTROLLERS_DICT.keys()}"
             # Load from robosuite/controllers/config/default/composite/
             controller_name = controller.lower()
             controller_fpath = (

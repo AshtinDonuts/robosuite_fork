@@ -8,7 +8,7 @@ from robosuite.models.objects import BowlObject
 from robosuite.models.tasks import ManipulationTask
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import UniformRandomSampler
-from robosuite.utils.transform_utils import convert_quat, quat_multiply
+from robosuite.utils.transform_utils import convert_quat
 
 
 class BowlFollow(ManipulationEnv):
@@ -30,10 +30,11 @@ class BowlFollow(ManipulationEnv):
             dict if same controller is to be used for all robots or else it should be a list of the same length as
             "robots" param
 
-        gripper_types (str or list of str): type of gripper. Must be ``WipingGripper`` or
-            ``WipingGripperVX300S`` (the flat-pad force-sensing tool used by the Wipe environment).
-            For ``VX300S`` robots ``WipingGripper`` is automatically promoted to ``WipingGripperVX300S``.
-            Should either be a single str or a list of the same length as "robots" param.
+        gripper_types (str or list of str): type of gripper, used to instantiate
+            gripper models from gripper factory. Default is "default", which is the default grippers(s) associated
+            with the robot(s) the 'robots' specification. None removes the gripper, and any other (valid) model
+            overrides the default gripper. Should either be single str if same gripper type is to be used for all
+            robots or else it should be a list of the same length as "robots" param
 
         base_types (None or str or list of str): type of base, used to instantiate base models from base factory.
             Default is "default", which is the default base associated with the robot(s) the 'robots' specification.
@@ -148,7 +149,7 @@ class BowlFollow(ManipulationEnv):
         robots,
         env_configuration="default",
         controller_configs=None,
-        gripper_types="WipingGripper",
+        gripper_types="default",
         base_types="default",
         initialization_noise="default",
         table_full_size=(0.5, 0.8, 0.05),
@@ -184,34 +185,6 @@ class BowlFollow(ManipulationEnv):
         renderer_config=None,
         seed=None,
     ):
-        # Resolve WipingGripper variant exactly as Wipe does (auto-upgrade for VX300S)
-        _wipe_grippers = frozenset({"WipingGripper", "WipingGripperVX300S"})
-        robots_list = list(robots) if isinstance(robots, (list, tuple)) else [robots]
-        if isinstance(gripper_types, str):
-            gt = gripper_types
-            primary = str(robots_list[0]).upper()
-            if gt == "WipingGripper" and primary == "VX300S":
-                gt = "WipingGripperVX300S"
-            assert gt in _wipe_grippers, "BowlFollow only supports WipingGripper / WipingGripperVX300S."
-            assert not (gt == "WipingGripperVX300S" and primary != "VX300S"), (
-                "WipingGripperVX300S is only valid for robot VX300S."
-            )
-            gripper_types = gt
-        else:
-            assert len(gripper_types) == len(robots_list), "gripper_types must match robots length."
-            resolved = []
-            for rname, gt_in in zip(robots_list, gripper_types):
-                primary = str(rname).upper()
-                gt = gt_in
-                if gt == "WipingGripper" and primary == "VX300S":
-                    gt = "WipingGripperVX300S"
-                assert gt in _wipe_grippers, "BowlFollow only supports WipingGripper / WipingGripperVX300S."
-                assert not (gt == "WipingGripperVX300S" and primary != "VX300S"), (
-                    "WipingGripperVX300S is only valid for robot VX300S."
-                )
-                resolved.append(gt)
-            gripper_types = resolved
-
         # settings for table top
         self.table_full_size = table_full_size
         self.table_friction = table_friction
@@ -259,10 +232,6 @@ class BowlFollow(ManipulationEnv):
             seed=seed,
         )
 
-        # Force/torque bias at the initial state (populated on first step, like Wipe)
-        self.ee_force_bias = {arm: np.zeros(3) for arm in self.robots[0].arms}
-        self.ee_torque_bias = {arm: np.zeros(3) for arm in self.robots[0].arms}
-
     def reward(self, action=None):
         """
         Reward function for the task. There is no sparse completion reward (no height-based success).
@@ -280,12 +249,12 @@ class BowlFollow(ManipulationEnv):
         reward = 0.0
 
         if self.reward_shaping:
-            bowl_pos = np.array(self.sim.data.body_xpos[self.bowl_body_id])
-            eef_pos = self._get_eef_xpos(self.robots[0].arms[0])
-            dist = np.linalg.norm(eef_pos - bowl_pos)
+            dist = self._gripper_to_target(
+                gripper=self.robots[0].gripper, target=self.bowl.root_body, target_type="body", return_distance=True
+            )
             reward += 1 - np.tanh(10.0 * dist)
 
-            if self._has_gripper_contact:
+            if self._check_grasp(gripper=self.robots[0].gripper, object_geoms=self.bowl):
                 reward += 0.25
 
         if self.reward_scale is not None:
@@ -350,19 +319,6 @@ class BowlFollow(ManipulationEnv):
             mujoco_objects=self.bowl,
         )
 
-        # The WipingGripper surface geoms were tuned for sliding on a flat table:
-        # they use solimp="0.2 0.9 0.01" (10 mm penetration zone) and solmix=10000
-        # which makes the gripper's soft parameters dominate contact mixing, causing
-        # the pad to clip through a curved bowl rim.  Override them here to use a
-        # 1 mm zone with near-rigid impedance and neutral mixing so the bowl's own
-        # stiff solimp contributes equally.
-        for geom in self.model.worldbody.iter("geom"):
-            name = geom.get("name", "")
-            if "wiping_surface" in name or "wiping_corner" in name:
-                geom.set("solimp", "0.9 0.99 0.001")
-                geom.set("solmix", "1")
-                geom.set("solref", "0.02 1")
-
     def _setup_references(self):
         """
         Sets up references to important components. A reference is typically an
@@ -423,70 +379,15 @@ class BowlFollow(ManipulationEnv):
         """
         super()._reset_internal()
 
-        # Reset EEF force/torque biases
-        self.ee_force_bias = {arm: np.zeros(3) for arm in self.robots[0].arms}
-        self.ee_torque_bias = {arm: np.zeros(3) for arm in self.robots[0].arms}
-
         # Reset all object positions using initializer sampler if we're not directly loading from an xml
         if not self.deterministic_reset:
 
             # Sample from the placement initializer for all objects
             object_placements = self.placement_initializer.sample()
 
-            # 180° rotation around X axis (wxyz) to flip bowl upside-down
-            flip_xyzw = np.array([1.0, 0.0, 0.0, 0.0])
-
             # Loop through all objects and reset their positions
             for obj_pos, obj_quat, obj in object_placements.values():
-                # obj_quat is wxyz; compose with vertical flip (wxyz -> xyzw -> multiply -> wxyz)
-                obj_quat_xyzw = convert_quat(np.array(obj_quat), to="xyzw")
-                flipped_xyzw = quat_multiply(flip_xyzw, obj_quat_xyzw)
-                flipped_wxyz = convert_quat(flipped_xyzw, to="wxyz")
-                self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), flipped_wxyz]))
-
-    def _get_eef_xpos(self, arm):
-        """
-        Returns the end-effector position for the given arm, read from the EEF site (same as Wipe).
-
-        Args:
-            arm (str): Arm name
-
-        Returns:
-            np.array: End-effector (x, y, z) position
-        """
-        return np.array(self.sim.data.site_xpos[self.robots[0].eef_site_id[arm]])
-
-    @property
-    def _has_gripper_contact(self):
-        """
-        True if any gripper EEF force exceeds the contact threshold (mirrors Wipe implementation).
-
-        Returns:
-            bool: True if contact force exceeds threshold
-        """
-        contact_threshold = 1.0
-        return any(
-            np.linalg.norm(self.robots[0].ee_force[arm] - self.ee_force_bias[arm]) > contact_threshold
-            for arm in self.robots[0].arms
-        )
-
-    def _post_action(self, action):
-        """
-        In addition to the super method, update the EEF force/torque bias on the first step.
-
-        Args:
-            action (np.array): Action to execute within the environment
-
-        Returns:
-            3-tuple: (reward, done, info)
-        """
-        reward, done, info = super()._post_action(action)
-
-        if all(np.linalg.norm(self.ee_force_bias[arm]) == 0 for arm in self.ee_force_bias):
-            self.ee_force_bias = self.robots[0].ee_force
-            self.ee_torque_bias = self.robots[0].ee_torque
-
-        return reward, done, info
+                self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
 
     def visualize(self, vis_settings):
         """
