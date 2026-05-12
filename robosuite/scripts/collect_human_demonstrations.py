@@ -90,6 +90,34 @@ def _device_input2action(device, goal_update_mode):
     return device.input2action()
 
 
+def _run_leaderarm_eef_anchor_delay_countdown(env, delay_sec: float) -> None:
+    """
+    Pause before `LeaderArm.start_control()` captures leader/follower anchor poses.
+
+    Mirrors ``robosuite.devices.leaderarm_eef`` ``__main__`` so the operator can
+    hold the physical leader in a neutral pose while the sim viewer stays live.
+    """
+    if delay_sec <= 0:
+        return
+    print("Simulation started. Hold the leader arm in the desired neutral pose.")
+    print("Anchor pose capture countdown:")
+    deadline = time.time() + delay_sec
+    last_printed = delay_sec
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        count = int(remaining) + 1
+        if count != last_printed:
+            print(f"  {count}...")
+            last_printed = count
+        viewer = getattr(env, "viewer", None)
+        if viewer is not None:
+            viewer.update()
+        env.render()
+    print("Capturing anchor pose now.", flush=True)
+
+
 def collect_human_trajectory(
     env,
     device,
@@ -98,6 +126,7 @@ def collect_human_trajectory(
     goal_update_mode,
     robot_index: int = 0,
     puma_dataset: bool = False,
+    leaderarm_eef_anchor_delay_sec: float = 0.0,
 ):
     """
     Use the device (keyboard or SpaceNav 3D mouse) to collect a demonstration.
@@ -108,10 +137,19 @@ def collect_human_trajectory(
         device (Device): to receive controls from the device
         arms (str): which arm to control (eg bimanual) 'right' or 'left'
         max_fr (int): if specified, pause the simulation whenever simulation runs faster than max_fr
+        robot_index (int): robot index for EE state logging when ``puma_dataset`` is True.
+        puma_dataset (bool): if True, return trajectory dict for pickle export.
+        leaderarm_eef_anchor_delay_sec (float): When > 0 and the device has EEF anchoring
+            (``trossen_leaderarm_eef``), wait this many seconds after ``env.reset()`` before
+            ``start_control()`` captures anchors (same idea as ``leaderarm_eef.py`` ``__main__``).
+            Use ``0`` to skip.
     """
 
     env.reset()
     env.render()
+
+    if leaderarm_eef_anchor_delay_sec > 0 and hasattr(device, "_leader_anchor_pose"):
+        _run_leaderarm_eef_anchor_delay_countdown(env, leaderarm_eef_anchor_delay_sec)
 
     task_completion_hold_count = -1  # counter to collect 10 timesteps after reaching goal
     device.start_control()
@@ -601,6 +639,14 @@ if __name__ == "__main__":
         help="Rotation step size (rad) per o/p key press for online pitch calibration "
         "(trossen_leaderarm_eef). Default: ~3°.",
     )
+    parser.add_argument(
+        "--leaderarm-eef-anchor-delay-sec",
+        type=float,
+        default=5.0,
+        help="After each env reset, wait this many seconds before capturing EEF anchor poses "
+        "(trossen_leaderarm_eef only; same behavior as robosuite.devices.leaderarm_eef __main__). "
+        "Use 0 to disable.",
+    )
     args = parser.parse_args()
 
     _is_leaderarm_device = args.device in ("trossen_leaderarm", "ros2_leaderarm")
@@ -870,6 +916,11 @@ if __name__ == "__main__":
                 args.goal_update_mode,
                 robot_index=args.robot_index,
                 puma_dataset=args.puma_dataset,
+                leaderarm_eef_anchor_delay_sec=(
+                    float(args.leaderarm_eef_anchor_delay_sec)
+                    if args.device == "trossen_leaderarm_eef"
+                    else 0.0
+                ),
             )
 
             if args.puma_dataset:

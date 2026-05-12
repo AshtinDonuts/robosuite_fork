@@ -228,7 +228,7 @@ class BowlFollow(ManipulationEnv):
         reward_scale=1.0,
         reward_shaping=False,
         # bowl_scale=(3.0, 3.0, 3.0),
-        bowl_scale=(2.0, 2.0, 1.0),  # @USER TODO
+        bowl_scale=(5.0, 5.0, 1.0),  # @USER TODO
         # bowl_scale is now exposed as either:
         # Uniform: a scalar, e.g. bowl_scale=1.5
         # Non-uniform: a 3-vector (sx, sy, sz), e.g. bowl_scale=(1.0, 1.0, 1.0)
