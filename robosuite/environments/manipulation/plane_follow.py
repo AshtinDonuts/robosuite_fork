@@ -136,8 +136,9 @@ class PlaneFollow(ManipulationEnv):
 
         reward_shaping (bool): if True, use dense rewards (reaching and contact only).
 
-        surface_type (str): Workpiece mesh variant: ``"flat"`` (horizontal slab), ``"tilted"`` (slab
-            tilted ~18° about Y), or ``"curved"`` (shallow dome cap).
+        surface_type (str): Workpiece mesh variant: ``"flat"``, ``"tilted"``, ``"curved"`` (convex
+            arc along Y), ``"curved_inverse"`` (concave trough along Y), or ``"curved_wave"``
+            (single-period sine: crest then trough along Y).
 
         surface_scale (float or 3-tuple): Uniform or per-axis scale applied to the workpiece mesh.
 
@@ -238,7 +239,7 @@ class PlaneFollow(ManipulationEnv):
         use_object_obs=True,
         reward_scale=1.0,
         reward_shaping=False,
-        surface_type="flat",  # flat | tilted | curved
+        surface_type="flat",  # flat | tilted | curved | curved_inverse | curved_wave
         surface_scale=(1.0, 1.0, 1.0),
         # surface_scale is now exposed as either:
         # Uniform: a scalar, e.g. surface_scale=1.5
@@ -467,7 +468,7 @@ class PlaneFollow(ManipulationEnv):
                 mujoco_objects=self.surface,
                 x_range=[-0.1, 0.1],
                 y_range=[-0.03, 0.03],
-                rotation=None,
+                rotation=0,
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
                 reference_pos=self.table_offset,

@@ -20,8 +20,8 @@ def main():
         "--surface-type",
         type=str,
         default="flat",
-        choices=("flat", "tilted", "curved"),
-        help="Workpiece mesh: flat slab, tilted slab, or curved cap.",
+        choices=("flat", "tilted", "curved", "curved_inverse", "curved_wave"),
+        help="Workpiece mesh: flat, tilted, convex/inverse arc (Y), or sinusoidal wave (Y).",
     )
     args = parser.parse_args()
 

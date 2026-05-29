@@ -1,17 +1,17 @@
-<mujoco model="plane_curved">
+<mujoco model="plane_curved_wave">
   <asset>
-    <mesh file="meshes/plane_surfaces/curved_surface.obj" name="plane_curved_mesh"/>
+    <mesh file="meshes/plane_surfaces/curved_wave_surface.obj" name="plane_curved_wave_mesh"/>
   </asset>
   <worldbody>
     <body>
       <body name="object">
-        <geom mesh="plane_curved_mesh" type="mesh"
+        <geom mesh="plane_curved_wave_mesh" type="mesh"
               solimp="0.998 0.998 0.001" solref="0.001 1"
-              density="3.125" friction="0.95 0.3 0.1" rgba="0.72 0.80 0.78 1"
+              density="3.125" friction="0.95 0.3 0.1" rgba="0.85 0.85 0.88 1"
               contype="1" conaffinity="1" group="0"/>
-        <geom mesh="plane_curved_mesh" type="mesh"
+        <geom mesh="plane_curved_wave_mesh" type="mesh"
               solimp="0.998 0.998 0.001" solref="0.001 1"
-              density="1e-8" rgba="0.72 0.80 0.78 1"
+              density="1e-8" rgba="0.85 0.85 0.88 1"
               contype="0" conaffinity="0" group="1"/>
       </body>
       <site rgba="0 0 0 0" size="0.005" pos="0 0 0" name="bottom_site"/>

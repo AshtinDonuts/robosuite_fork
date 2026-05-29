@@ -39,6 +39,8 @@ PLANE_SURFACE_XML = {
     "flat": "objects/plane_flat.xml",
     "tilted": "objects/plane_tilted.xml",
     "curved": "objects/plane_curved.xml",
+    "curved_inverse": "objects/plane_curved_inverse.xml",
+    "curved_wave": "objects/plane_curved_wave.xml",
 }
 
 
