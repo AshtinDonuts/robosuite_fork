@@ -6,7 +6,7 @@ from robosuite.environments.manipulation.manipulation_env import ManipulationEnv
 from robosuite.models.arenas import TableArena
 from robosuite.models.objects import BowlObject, MujocoXMLObject
 from robosuite.models.tasks import ManipulationTask
-from robosuite.utils.mjcf_utils import xml_path_completion
+from robosuite.utils.mjcf_utils import array_to_string, xml_path_completion
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import UniformRandomSampler
 from robosuite.utils.transform_utils import convert_quat, quat_multiply
@@ -141,6 +141,11 @@ class BowlFollow(ManipulationEnv):
         bowl_static (bool): If True, the bowl is welded to the world (no free joint): it does not
             move when pushed, but collision geoms, friction, and contact forces still apply.
 
+        bowl_friction (None or float or 3-tuple): MuJoCo geom friction ``(sliding, torsional, rolling)``
+            applied to every bowl collision geom. If None, friction values from ``objects/bowl.xml`` are kept.
+            A scalar sets sliding friction only; torsional and rolling use ``5e-3`` and ``1e-4`` (same secondary
+            values as the default table friction tuple).
+
         placement_initializer (ObjectPositionSampler): if provided, will
             be used to place objects on every reset, else a UniformRandomSampler
             is used by default.
@@ -228,12 +233,16 @@ class BowlFollow(ManipulationEnv):
         reward_scale=1.0,
         reward_shaping=False,
         # bowl_scale=(3.0, 3.0, 3.0),
-        bowl_scale=(5.0, 5.0, 1.0),  # @USER TODO
+        bowl_scale=(4.0, 4.0, 2.0),  # @USER TODO
         # bowl_scale is now exposed as either:
         # Uniform: a scalar, e.g. bowl_scale=1.5
         # Non-uniform: a 3-vector (sx, sy, sz), e.g. bowl_scale=(1.0, 1.0, 1.0)
         wiping_gripper_scale=(0.25, 0.5, 3.0),  # @USER TODO
         bowl_static=True, # @USER TODO
+        bowl_friction=0.01,  #@USER TODO
+        # Default: (0.95 0.3 0.1)
+        # Scalar - sets the sliding friction, and sets torsion = 5e-3 , rolling = 1e-4
+        # Tuple  - sets (sliding, torsional, rolling)
         placement_initializer=None,
         has_renderer=False,
         has_offscreen_renderer=True,
@@ -299,6 +308,16 @@ class BowlFollow(ManipulationEnv):
         self.wiping_gripper_scale = tuple(wiping_gripper_scale)
 
         self.bowl_static = bool(bowl_static)
+
+        if bowl_friction is None:
+            self._bowl_friction = None
+        elif isinstance(bowl_friction, (int, float, np.floating, np.integer)):
+            f = float(bowl_friction)
+            self._bowl_friction = (f, 5e-3, 1e-4)
+        else:
+            bf = np.array(bowl_friction, dtype=float).reshape(-1)
+            assert bf.size == 3, f"bowl_friction must be None, a scalar, or length-3; got {bowl_friction!r}"
+            self._bowl_friction = tuple(bf.tolist())
 
         # whether to use ground-truth object states
         self.use_object_obs = use_object_obs
@@ -417,6 +436,15 @@ class BowlFollow(ManipulationEnv):
                 assert scale.size == 3, f"bowl_scale must be a scalar or length-3 (x,y,z); got {self.bowl_scale}"
                 if not np.allclose(scale, np.ones(3)):
                     self.bowl.set_scale(scale.tolist())
+
+        if self._bowl_friction is not None:
+            friction_str = array_to_string(np.array(self._bowl_friction, dtype=float))
+            for geom in self.bowl.worldbody.iter("geom"):
+                ct = int(geom.get("contype", "1"))
+                ca = int(geom.get("conaffinity", "1"))
+                if ct == 0 and ca == 0:
+                    continue
+                geom.set("friction", friction_str)
 
         # Create placement initializer
         if self.placement_initializer is not None:
