@@ -4,6 +4,7 @@ from robosuite.environments.base import make
 from robosuite.environments.manipulation.lift import Lift
 from robosuite.environments.manipulation.lift2 import Lift2
 from robosuite.environments.manipulation.bowl_follow import BowlFollow
+from robosuite.environments.manipulation.plane_follow import PlaneFollow
 from robosuite.environments.manipulation.stack import Stack
 from robosuite.environments.manipulation.nut_assembly import NutAssembly
 from robosuite.environments.manipulation.pick_place import PickPlace

@@ -5,6 +5,7 @@ from .object_groups import ObjectGroup
 from .xml_objects import (
     BottleObject,
     BowlObject,
+    PlaneSurfaceObject,
     CanObject,
     LemonObject,
     MilkObject,

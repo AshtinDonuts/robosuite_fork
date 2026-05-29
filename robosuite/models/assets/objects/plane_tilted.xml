@@ -1,0 +1,22 @@
+<mujoco model="plane_tilted">
+  <asset>
+    <mesh file="meshes/plane_surfaces/tilted_horizontal_box.obj" name="plane_tilted_mesh"/>
+  </asset>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom mesh="plane_tilted_mesh" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.125" friction="0.95 0.3 0.1" rgba="0.78 0.72 0.65 1"
+              contype="1" conaffinity="1" group="0"/>
+        <geom mesh="plane_tilted_mesh" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="1e-8" rgba="0.78 0.72 0.65 1"
+              contype="0" conaffinity="0" group="1"/>
+      </body>
+      <site rgba="0 0 0 0" size="0.005" pos="0 0 -0.02" name="bottom_site"/>
+      <site rgba="0 0 0 0" size="0.005" pos="0 0 0.02" name="top_site"/>
+      <site rgba="0 0 0 0" size="0.005" pos="0.175 0.175 0" name="horizontal_radius_site"/>
+    </body>
+  </worldbody>
+</mujoco>

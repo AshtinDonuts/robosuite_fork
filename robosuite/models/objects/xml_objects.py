@@ -35,6 +35,32 @@ class BowlObject(MujocoXMLObject):
         )
 
 
+PLANE_SURFACE_XML = {
+    "flat": "objects/plane_flat.xml",
+    "tilted": "objects/plane_tilted.xml",
+    "curved": "objects/plane_curved.xml",
+}
+
+
+class PlaneSurfaceObject(MujocoXMLObject):
+    """
+    Wiping workpiece with a simple mesh surface (flat box, tilted box, or curved cap).
+    """
+
+    def __init__(self, name, surface_type="flat"):
+        surface_type = str(surface_type).lower()
+        assert surface_type in PLANE_SURFACE_XML, (
+            f"surface_type must be one of {tuple(PLANE_SURFACE_XML)}; got {surface_type!r}"
+        )
+        super().__init__(
+            xml_path_completion(PLANE_SURFACE_XML[surface_type]),
+            name=name,
+            joints=[dict(type="free", damping="0.0005")],
+            obj_type="all",
+            duplicate_collision_geoms=False,
+        )
+
+
 class CanObject(MujocoXMLObject):
     """
     Coke can object (used in PickPlace)
