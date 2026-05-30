@@ -1,5 +1,6 @@
 from collections import OrderedDict
 
+import mujoco
 import numpy as np
 
 from robosuite.environments.manipulation.manipulation_env import ManipulationEnv
@@ -10,7 +11,7 @@ from robosuite.models.tasks import ManipulationTask
 from robosuite.utils.mjcf_utils import array_to_string, xml_path_completion
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import UniformRandomSampler
-from robosuite.utils.transform_utils import convert_quat
+from robosuite.utils.transform_utils import convert_quat, make_pose, mat2quat, quat2mat
 
 
 def _scale_wiping_gripper(root, sx, sy, sz):
@@ -644,3 +645,157 @@ class PlaneFollow(ManipulationEnv):
         terminated early on a lift threshold (episode length is controlled by ``horizon`` / ``ignore_done``).
         """
         return False
+
+    def get_robot_base_pose(self):
+        """
+        Homogeneous pose of the robot base (root body) in the MuJoCo world frame.
+
+        Returns:
+            np.ndarray: 4x4 pose matrix
+        """
+        root = self.robots[0].robot_model.root_body
+        pos = np.array(self.sim.data.get_body_xpos(root))
+        rot = np.array(self.sim.data.get_body_xmat(root).reshape(3, 3))
+        return make_pose(pos, rot)
+
+    def world_to_robot_base(self, points_world):
+        """
+        Express world-frame 3D points in the robot base frame (analogous to ``panda_link0`` on hardware).
+
+        Args:
+            points_world (np.ndarray): shape (N, 3)
+
+        Returns:
+            np.ndarray: shape (N, 3)
+        """
+        points_world = np.asarray(points_world, dtype=float).reshape(-1, 3)
+        base_pose = self.get_robot_base_pose()
+        base_pos = base_pose[:3, 3]
+        base_rot = base_pose[:3, :3]
+        return (base_rot.T @ (points_world - base_pos).T).T
+
+    def robot_base_to_world(self, points_base):
+        """
+        Map robot-base-frame points into the MuJoCo world frame.
+
+        Args:
+            points_base (np.ndarray): shape (N, 3)
+
+        Returns:
+            np.ndarray: shape (N, 3)
+        """
+        points_base = np.asarray(points_base, dtype=float).reshape(-1, 3)
+        base_pose = self.get_robot_base_pose()
+        base_pos = base_pose[:3, 3]
+        base_rot = base_pose[:3, :3]
+        return (base_rot @ points_base.T).T + base_pos
+
+    def get_eef_pose_robot_base(self, arm=None):
+        """
+        End-effector pose in the robot base frame for policy-transportation logging.
+
+        Args:
+            arm (str or None): arm name; defaults to the first arm of robot 0.
+
+        Returns:
+            tuple: (position (3,), quaternion (4,) in **w, x, y, z** order)
+        """
+        arm = arm or self.robots[0].arms[0]
+        site_id = self.robots[0].eef_site_id[arm]
+        pos_world = np.array(self.sim.data.site_xpos[site_id])
+        mat_world = np.array(self.sim.data.site_xmat[site_id].reshape(3, 3))
+        pos_base = self.world_to_robot_base(pos_world.reshape(1, 3))[0]
+        base_pose = self.get_robot_base_pose()
+        rot_base = base_pose[:3, :3].T @ mat_world
+        quat_xyzw = mat2quat(rot_base)
+        quat_wxyz = convert_quat(quat_xyzw, to="wxyz")
+        return pos_base, quat_wxyz
+
+    def _surface_scale_vector(self):
+        """Return (sx, sy, sz) applied to the workpiece mesh."""
+        if self.surface_scale is None:
+            return np.ones(3, dtype=float)
+        if isinstance(self.surface_scale, (int, float, np.floating, np.integer)):
+            s = float(self.surface_scale)
+            return np.array([s, s, s], dtype=float)
+        return np.array(self.surface_scale, dtype=float).reshape(3)
+
+    def _surface_local_half_extents(self):
+        """Half-extents (x, y, z) of the workpiece in the surface body frame."""
+        scale = self._surface_scale_vector()
+        half = np.array(self.surface.get_bounding_box_half_size(), dtype=float) * scale
+        return half
+
+    def _raycast_surface_points_world(self, points_world_xy, z_offset=0.2):
+        """
+        Refine XY locations onto the workpiece top using vertical MuJoCo rays.
+
+        Args:
+            points_world_xy (np.ndarray): shape (N, 2) world-frame XY samples
+            z_offset (float): ray origin height above the surface body origin
+
+        Returns:
+            np.ndarray: shape (N, 3) world-frame points on the mesh
+        """
+        model = self.sim.model._model
+        data = self.sim.data._data
+        body_z = float(self.sim.data.body_xpos[self.surface_body_id][2])
+        geomid = np.array([-1], dtype=np.int32)
+        refined = []
+        for xy in points_world_xy:
+            pnt = np.array([xy[0], xy[1], body_z + z_offset], dtype=np.float64)
+            vec = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+            dist = mujoco.mj_ray(model, data, pnt, vec, None, 1, -1, geomid)
+            if dist is None or dist < 0:
+                refined.append(np.array([xy[0], xy[1], body_z], dtype=float))
+            else:
+                refined.append(pnt + dist * vec)
+        return np.array(refined, dtype=float)
+
+    def sample_surface_keypoints(
+        self,
+        nx=20,
+        ny=20,
+        frame="robot_base",
+        contact_offset=0.0,
+        use_raycast=True,
+    ):
+        """
+        Build a dense keypoint grid on the workpiece (same 20x20 layout as the real cleaning experiment).
+
+        Points are sampled on the workpiece bounding footprint in the surface body frame, optionally
+        projected onto the collision mesh, then expressed in ``robot_base`` or ``world`` coordinates.
+
+        Args:
+            nx (int): grid resolution along local X
+            ny (int): grid resolution along local Y
+            frame (str): ``"robot_base"`` or ``"world"``
+            contact_offset (float): offset along surface outward normal (m); positive lifts off the mesh
+            use_raycast (bool): if True, refine heights with ``mj_ray`` (recommended for curved workpieces)
+
+        Returns:
+            np.ndarray: shape (nx * ny, 3) keypoint coordinates
+        """
+        assert frame in ("robot_base", "world"), f"frame must be 'robot_base' or 'world', got {frame!r}"
+
+        half = self._surface_local_half_extents()
+        scale = self._surface_scale_vector()
+        top_local = np.array(self.surface.top_offset, dtype=float) * scale
+
+        xs = np.linspace(-half[0], half[0], nx)
+        ys = np.linspace(-half[1], half[1], ny)
+        local_xy = np.array([[x, y] for x in xs for y in ys])
+
+        body_pos = np.array(self.sim.data.body_xpos[self.surface_body_id])
+        body_mat = np.array(self.sim.data.body_xmat[self.surface_body_id].reshape(3, 3))
+        local_pts = np.hstack([local_xy, np.full((local_xy.shape[0], 1), top_local[2])])
+        world_pts = (body_mat @ local_pts.T).T + body_pos
+
+        if use_raycast:
+            world_pts = self._raycast_surface_points_world(world_pts[:, :2])
+            if contact_offset != 0.0:
+                world_pts = world_pts + body_mat[:, 2] * contact_offset
+
+        if frame == "robot_base":
+            return self.world_to_robot_base(world_pts)
+        return world_pts
