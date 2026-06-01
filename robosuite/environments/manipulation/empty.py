@@ -9,8 +9,9 @@ class Empty(ManipulationEnv):
     """
     Minimal manipulation environment with an empty arena (no table, no task objects).
 
-    The robot is positioned using the standard table-mount offset so it sits correctly
-    on its own pedestal. No workspace table or dirt is added.
+    By default the robot uses the empty-arena base offset. Pass ``use_table_mount=True``
+    to apply the table-mount offset (same convention as Wipe / Lift) when the robot
+    should sit on a pedestal as if in front of a table. No workspace table or dirt is added.
     """
 
     def __init__(
@@ -21,6 +22,7 @@ class Empty(ManipulationEnv):
         base_types="default",
         gripper_types="default",
         initialization_noise="default",
+        use_table_mount=False,
         use_object_obs=False,
         reward_scale=1.0,
         reward_shaping=False,
@@ -46,6 +48,7 @@ class Empty(ManipulationEnv):
         seed=None,
         **kwargs,
     ):
+        self.use_table_mount = use_table_mount
         self.use_object_obs = use_object_obs
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
@@ -85,9 +88,10 @@ class Empty(ManipulationEnv):
     def _load_model(self):
         super()._load_model()
 
-        # Position robot using the same table-mount convention as Wipe / Lift so it
-        # sits correctly on its own pedestal.
-        xpos = self.robots[0].robot_model.base_xpos_offset["table"](0.5)
+        if self.use_table_mount:
+            xpos = self.robots[0].robot_model.base_xpos_offset["table"](0.5)
+        else:
+            xpos = self.robots[0].robot_model.base_xpos_offset["empty"]
         self.robots[0].robot_model.set_base_xpos(xpos)
 
         mujoco_arena = EmptyArena()
