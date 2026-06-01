@@ -1,18 +1,29 @@
 <mujoco model="plane_curved_wave">
   <asset>
-    <mesh file="meshes/plane_surfaces/curved_wave_surface.obj" name="plane_curved_wave_mesh"/>
+    <mesh file="meshes/plane_surfaces/curved_wave_surface.obj" name="plane_curved_wave_visual_mesh"/>
+    <mesh file="meshes/plane_surfaces/curved_wave_decomp/curved_wave_part_00.obj" name="plane_curved_wave_col_00"/>
+    <mesh file="meshes/plane_surfaces/curved_wave_decomp/curved_wave_part_01.obj" name="plane_curved_wave_col_01"/>
+    <mesh file="meshes/plane_surfaces/curved_wave_decomp/curved_wave_part_02.obj" name="plane_curved_wave_col_02"/>
   </asset>
   <worldbody>
     <body>
       <body name="object">
-        <geom mesh="plane_curved_wave_mesh" type="mesh"
-              solimp="0.998 0.998 0.001" solref="0.001 1"
-              density="3.125" friction="0.95 0.3 0.1" rgba="0.85 0.85 0.88 1"
-              contype="1" conaffinity="1" group="0"/>
-        <geom mesh="plane_curved_wave_mesh" type="mesh"
+        <geom mesh="plane_curved_wave_visual_mesh" type="mesh"
               solimp="0.998 0.998 0.001" solref="0.001 1"
               density="1e-8" rgba="0.85 0.85 0.88 1"
               contype="0" conaffinity="0" group="1"/>
+        <geom mesh="plane_curved_wave_col_00" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.125" friction="0.95 0.3 0.1" rgba="0.85 0.85 0.88 1"
+              contype="1" conaffinity="1" group="0"/>
+        <geom mesh="plane_curved_wave_col_01" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.125" friction="0.95 0.3 0.1" rgba="0.85 0.85 0.88 1"
+              contype="1" conaffinity="1" group="0"/>
+        <geom mesh="plane_curved_wave_col_02" type="mesh"
+              solimp="0.998 0.998 0.001" solref="0.001 1"
+              density="3.125" friction="0.95 0.3 0.1" rgba="0.85 0.85 0.88 1"
+              contype="1" conaffinity="1" group="0"/>
       </body>
       <site rgba="0 0 0 0" size="0.005" pos="0 0 0" name="bottom_site"/>
       <site rgba="0 0 0 0" size="0.005" pos="0 0 0.105" name="top_site"/>

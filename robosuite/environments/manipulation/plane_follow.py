@@ -19,7 +19,7 @@ def _scale_wiping_gripper(root, sx, sy, sz):
     Non-uniformly scale every geometric element inside a WipingGripper XML tree.
 
     The helper rescales in the body-local coordinate frame of the gripper pad.
-    Positions of bodies, geoms and sites are multiplied component-wise by
+    Positions of bodies, geoms and sites are multiplied component-wise bys
     (sx, sy, sz).  Sizes are rescaled according to geometry type:
 
         box       – each half-extent is multiplied by the matching scale factor
