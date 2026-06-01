@@ -108,6 +108,15 @@ class Empty(ManipulationEnv):
             pos="1 0 0",
             rgba="0 1 0 1",
         )
+        ET.SubElement(
+            mujoco_arena.worldbody,
+            "site",
+            name="goal_position_marker",
+            type="sphere",
+            size="0.03",
+            pos="0 0 -1",
+            rgba="1 0 0 0.9",
+        )
 
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,

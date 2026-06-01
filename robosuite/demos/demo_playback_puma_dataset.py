@@ -7,6 +7,9 @@ This script expects an episode directory containing:
   - env_info.json
   - ee_state_*.pk  (pickles with keys: x_pos, x_rot, x_dot, delta_t[, gripper_action])
 
+For each trajectory, a red non-collidable sphere (MuJoCo site) marks the demonstration
+endpoint at the final recorded EE position (``x_pos[-1]``, world frame).
+
 Example:
     $ python demo_playback_puma_dataset.py --episode_dir /path/to/episode
 """
@@ -44,6 +47,50 @@ def _episode_pk_paths(episode_dir: str) -> list[str]:
     if not pk_paths:
         raise FileNotFoundError(f"No ee_state_*.pk found under {episode_dir}")
     return pk_paths
+
+
+GOAL_MARKER_RGBA = np.array([1.0, 0.0, 0.0, 0.9], dtype=np.float64)
+GOAL_MARKER_RADIUS = 0.03
+
+
+def _goal_position_from_trace(trace: dict) -> np.ndarray:
+    """Final demonstrated EE position in world frame (demonstration endpoint)."""
+    return np.asarray(trace["x_pos"][-1], dtype=np.float64)
+
+
+class _GoalPositionMarker:
+    """Non-collidable red sphere (MuJoCo site) at the trajectory goal."""
+
+    _SITE_SUFFIX = "goal_position_marker"
+
+    def __init__(self, env):
+        self.env = env
+        self._warned_missing = False
+
+    def _resolve_site_id(self, sim):
+        for name in sim.model.site_names:
+            if name.endswith(self._SITE_SUFFIX):
+                return sim.model.site_name2id(name)
+        return None
+
+    def set_goal(self, goal_pos: np.ndarray):
+        # env.sim is replaced on hard_reset(); always use the live sim and re-resolve the site.
+        sim = self.env.sim
+        site_id = self._resolve_site_id(sim)
+        if site_id is None:
+            if not self._warned_missing:
+                print(
+                    "Warning: goal_position_marker site not found in the environment model; "
+                    "goal marker will not be shown.",
+                    flush=True,
+                )
+                self._warned_missing = True
+            return
+        goal_pos = np.asarray(goal_pos, dtype=np.float64).reshape(3)
+        sim.model.site_pos[site_id] = goal_pos
+        sim.model.site_size[site_id] = GOAL_MARKER_RADIUS
+        sim.model.site_rgba[site_id] = GOAL_MARKER_RGBA
+        sim.forward()
 
 
 def _iter_trace_steps(trace: dict):
@@ -306,9 +353,12 @@ def playback_puma_episode(
 
     ref_frame = _resolve_action_ref_frame(env_info, action_ref_frame)
 
+    goal_marker = _GoalPositionMarker(env)
+
     pk_paths = _episode_pk_paths(episode_dir)
     for ep_idx, pk_path in enumerate(pk_paths):
         trace = _load_ee_trace(pk_path)
+        goal_marker.set_goal(_goal_position_from_trace(trace))
         _prepare_episode_start(
             env,
             robot,
@@ -363,7 +413,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--start_settle_sec",
         type=float,
-        default=2.0,
+        default=0.1,
         help="Seconds to wait after reaching the episode starting pose before replay begins",
     )
     args = parser.parse_args()
