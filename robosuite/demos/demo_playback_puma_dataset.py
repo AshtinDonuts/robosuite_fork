@@ -39,26 +39,150 @@ def _load_ee_trace(pk_path: str) -> dict:
     return data
 
 
-def _iter_episode_steps(episode_dir: str):
+def _episode_pk_paths(episode_dir: str) -> list[str]:
     pk_paths = sorted(glob(os.path.join(episode_dir, "ee_state_*.pk")))
     if not pk_paths:
         raise FileNotFoundError(f"No ee_state_*.pk found under {episode_dir}")
-    for pk_idx, pk_path in enumerate(pk_paths):
-        print(f'Replaying Episode: {pk_idx}')
-        trace = _load_ee_trace(pk_path)
-        x_pos = trace["x_pos"]
-        x_rot = trace["x_rot"]
-        delta_t = np.asarray(trace["delta_t"])
-        gripper_action = trace.get("gripper_action", None)
-        n = min(len(x_pos), len(x_rot), len(delta_t))
-        for i in range(n):
-            ga = np.asarray(gripper_action[i], dtype=np.float64) if gripper_action is not None else None
-            yield (
-                np.asarray(x_pos[i], dtype=np.float64),
-                np.asarray(x_rot[i], dtype=np.float64),
-                float(delta_t[i]),
-                ga,
-            )
+    return pk_paths
+
+
+def _iter_trace_steps(trace: dict):
+    x_pos = trace["x_pos"]
+    x_rot = trace["x_rot"]
+    delta_t = np.asarray(trace["delta_t"])
+    gripper_action = trace.get("gripper_action", None)
+    n = min(len(x_pos), len(x_rot), len(delta_t))
+    for i in range(n):
+        ga = np.asarray(gripper_action[i], dtype=np.float64) if gripper_action is not None else None
+        yield (
+            np.asarray(x_pos[i], dtype=np.float64),
+            np.asarray(x_rot[i], dtype=np.float64),
+            float(delta_t[i]),
+            ga,
+        )
+
+
+def _go_to_homepose(env):
+    print("Resetting robot to home pose...", flush=True)
+    env.reset()
+
+
+def _sleep_settle(settle_sec: float, label: str = "starting pose"):
+    if settle_sec <= 0:
+        return
+    print(f"Waiting {settle_sec:.1f}s for robot to reach {label}...", flush=True)
+    time.sleep(settle_sec)
+
+
+def _step_toward_target(
+    env,
+    robot,
+    arm: str,
+    tpos: np.ndarray,
+    trot: np.ndarray,
+    out_max6: np.ndarray,
+    ref_frame: str,
+    gripper_action: np.ndarray | None,
+    max_fr: int | None,
+    realtime_from_delta_t: bool,
+    dt: float = 0.0,
+) -> tuple[float, float]:
+    """One OSC step toward target pose. Returns (position error norm, orientation error norm) in world frame."""
+    start = time.time()
+    site_id = robot.eef_site_id[arm]
+    cur_pos = np.asarray(env.sim.data.site_xpos[site_id], dtype=np.float64)
+    cur_rot = np.asarray(env.sim.data.site_xmat[site_id].reshape(3, 3), dtype=np.float64)
+
+    delta_pos = tpos - cur_pos
+    delta_ori = orientation_error(trot, cur_rot)
+    pos_err = float(np.linalg.norm(delta_pos))
+    ori_err = float(np.linalg.norm(delta_ori))
+
+    if ref_frame == "base":
+        delta_pos = _world_vec_to_controller_base(robot, arm, delta_pos)
+        delta_ori = _world_vec_to_controller_base(robot, arm, delta_ori)
+
+    action = _build_action(delta_pos, delta_ori, out_max6, env.action_dim, gripper_action=gripper_action)
+    env.step(action)
+    env.render()
+
+    if realtime_from_delta_t:
+        sleep_s = max(0.0, dt - (time.time() - start))
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+    elif max_fr is not None and max_fr > 0:
+        elapsed = time.time() - start
+        diff = 1.0 / float(max_fr) - elapsed
+        if diff > 0:
+            time.sleep(diff)
+
+    return pos_err, ori_err
+
+
+def _reach_pose(
+    env,
+    robot,
+    arm: str,
+    tpos: np.ndarray,
+    trot: np.ndarray,
+    out_max6: np.ndarray,
+    ref_frame: str,
+    max_fr: int | None,
+    realtime_from_delta_t: bool,
+    pos_tol: float = 0.01,
+    ori_tol: float = 0.1,
+    max_steps: int = 400,
+    gripper_action: np.ndarray | None = None,
+):
+    for _ in range(max_steps):
+        pos_err, ori_err = _step_toward_target(
+            env,
+            robot,
+            arm,
+            tpos,
+            trot,
+            out_max6,
+            ref_frame,
+            gripper_action,
+            max_fr,
+            realtime_from_delta_t,
+        )
+        if pos_err < pos_tol and ori_err < ori_tol:
+            break
+
+
+def _prepare_episode_start(
+    env,
+    robot,
+    arm: str,
+    trace: dict,
+    out_max6: np.ndarray,
+    ref_frame: str,
+    max_fr: int | None,
+    realtime_from_delta_t: bool,
+    start_settle_sec: float,
+):
+    x_pos = trace["x_pos"]
+    x_rot = trace["x_rot"]
+    gripper_action = trace.get("gripper_action", None)
+    tpos = np.asarray(x_pos[0], dtype=np.float64)
+    trot = np.asarray(x_rot[0], dtype=np.float64)
+    ga = np.asarray(gripper_action[0], dtype=np.float64) if gripper_action is not None else None
+
+    print("Moving to episode starting pose...", flush=True)
+    _reach_pose(
+        env,
+        robot,
+        arm,
+        tpos,
+        trot,
+        out_max6,
+        ref_frame,
+        max_fr,
+        realtime_from_delta_t,
+        gripper_action=ga,
+    )
+    _sleep_settle(start_settle_sec, label="starting pose")
 
 
 def _get_osc_output_max(controller_configs: dict) -> np.ndarray:
@@ -168,6 +292,7 @@ def playback_puma_episode(
     max_fr: int | None = 20,
     realtime_from_delta_t: bool = False,
     action_ref_frame: str = "auto",
+    start_settle_sec: float = 2.0,
 ):
     env.reset()
 
@@ -181,38 +306,39 @@ def playback_puma_episode(
 
     ref_frame = _resolve_action_ref_frame(env_info, action_ref_frame)
 
-    for (tpos, trot, dt, gripper_ac) in _iter_episode_steps(episode_dir):
-        start = time.time()
+    pk_paths = _episode_pk_paths(episode_dir)
+    for ep_idx, pk_path in enumerate(pk_paths):
+        trace = _load_ee_trace(pk_path)
+        _prepare_episode_start(
+            env,
+            robot,
+            arm,
+            trace,
+            out_max6,
+            ref_frame,
+            max_fr,
+            realtime_from_delta_t,
+            start_settle_sec,
+        )
 
-        # Read current EE state from the same grip_site and in the same world frame
-        # as _get_eef_state() in collect_human_demonstrations.py uses.
-        # robot._hand_pos/_hand_orn return base-frame quantities (via pose_in_base_from_name),
-        # which would create a mixed-frame delta_pos = world_target - base_current.
-        site_id = robot.eef_site_id[arm]
-        cur_pos = np.asarray(env.sim.data.site_xpos[site_id], dtype=np.float64)
-        cur_rot = np.asarray(env.sim.data.site_xmat[site_id].reshape(3, 3), dtype=np.float64)
+        print(f"Replaying Episode: {ep_idx}")
+        for (tpos, trot, dt, gripper_ac) in _iter_trace_steps(trace):
+            _step_toward_target(
+                env,
+                robot,
+                arm,
+                tpos,
+                trot,
+                out_max6,
+                ref_frame,
+                gripper_ac,
+                max_fr,
+                realtime_from_delta_t,
+                dt=dt,
+            )
 
-        delta_pos = tpos - cur_pos
-        delta_ori = orientation_error(trot, cur_rot)
-
-        if ref_frame == "base":
-            delta_pos = _world_vec_to_controller_base(robot, arm, delta_pos)
-            delta_ori = _world_vec_to_controller_base(robot, arm, delta_ori)
-
-        action = _build_action(delta_pos, delta_ori, out_max6, env.action_dim, gripper_action=gripper_ac)
-        env.step(action)
-        env.render()
-
-        # pacing
-        if realtime_from_delta_t:
-            sleep_s = max(0.0, dt - (time.time() - start))
-            if sleep_s > 0:
-                time.sleep(sleep_s)
-        elif max_fr is not None and max_fr > 0:
-            elapsed = time.time() - start
-            diff = 1.0 / float(max_fr) - elapsed
-            if diff > 0:
-                time.sleep(diff)
+        if ep_idx + 1 < len(pk_paths):
+            _go_to_homepose(env)
 
     env.close()
 
@@ -234,6 +360,12 @@ if __name__ == "__main__":
         help="Frame for OSC delta commands. 'auto' uses env_info controller_configs input_ref_frame when available.",
     )
     parser.add_argument("--render_camera", type=str, default="frontview", help="Camera name for onscreen renderer")
+    parser.add_argument(
+        "--start_settle_sec",
+        type=float,
+        default=2.0,
+        help="Seconds to wait after reaching the episode starting pose before replay begins",
+    )
     args = parser.parse_args()
 
     env_info_path = os.path.join(args.episode_dir, "env_info.json")
@@ -264,4 +396,5 @@ if __name__ == "__main__":
         max_fr=args.max_fr,
         realtime_from_delta_t=args.realtime,
         action_ref_frame=args.action_ref_frame,
+        start_settle_sec=args.start_settle_sec,
     )
