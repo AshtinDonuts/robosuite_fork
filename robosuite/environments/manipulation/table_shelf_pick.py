@@ -29,20 +29,39 @@ _OBJECT_CLASS = {
 }
 
 _SHELF_XML = {
-    "default": "objects/shelf.xml",
     "3level": "objects/shelf_3level.xml",
+    "4level": "objects/shelf_4level.xml",
 }
+
+# Default marker cube z (shelf-body frame) between the 2nd and 3rd shelf levels.
+_DEFAULT_MARKER_CUBE_SHELF_Z = {
+    "3level": 0.75,   # level 2 top (0.605) and level 3 bottom (0.995)
+    "4level": 0.55,   # level 2 top (0.472) and level 3 bottom (0.728)
+}
+_SHELF_MARKER_CUBE_HALF_SIZE = 0.04
 
 
 class _ShelfObject(MujocoXMLObject):
     """
-    Fixed shelf loaded from ``models/assets/objects/shelf.xml`` or ``shelf_3level.xml``.
+    Fixed shelf loaded from ``models/assets/objects/shelf_3level.xml`` or ``shelf_4level.xml``.
     """
 
-    def __init__(self, name="shelf", shelf_type="default"):
+    def __init__(
+        self,
+        name="shelf",
+        shelf_type="3level",
+        marker_cube_shelf_x=0.0,
+        marker_cube_shelf_y=0.0,
+        marker_cube_shelf_z=None,
+    ):
         if shelf_type not in _SHELF_XML:
             raise ValueError(f"shelf_type must be one of {list(_SHELF_XML.keys())}, got {shelf_type!r}")
         self.shelf_type = shelf_type
+        self.marker_cube_shelf_x = float(marker_cube_shelf_x)
+        self.marker_cube_shelf_y = float(marker_cube_shelf_y)
+        if marker_cube_shelf_z is None:
+            marker_cube_shelf_z = _DEFAULT_MARKER_CUBE_SHELF_Z[shelf_type]
+        self.marker_cube_shelf_z = float(marker_cube_shelf_z)
         super().__init__(
             xml_path_completion(_SHELF_XML[shelf_type]),
             name=name,
@@ -113,6 +132,28 @@ class _ShelfObject(MujocoXMLObject):
                 },
             )
         )
+
+        half = _SHELF_MARKER_CUBE_HALF_SIZE
+        obj.append(
+            ET.Element(
+                "geom",
+                attrib={
+                    "name": "level_marker_cube",
+                    "type": "box",
+                    "pos": (
+                        f"{self.marker_cube_shelf_x} "
+                        f"{self.marker_cube_shelf_y} "
+                        f"{self.marker_cube_shelf_z}"
+                    ),
+                    "size": f"{half} {half} {half}",
+                    "rgba": "1 0 0 1",
+                    "contype": "0",
+                    "conaffinity": "0",
+                    "group": "1",
+                    "mass": "1e-8",
+                },
+            )
+        )
         return obj
 
     @property
@@ -136,7 +177,7 @@ class TableShelfPick(ManipulationEnv):
     Single-object table task with a shelf fixture to the side of the workspace.
 
     The layout is intended to resemble a robot reaching over a table with the shelf on the robot's left side, as in
-    the reference screenshot. The shelf is loaded from ``objects/shelf.xml`` (default) or ``objects/shelf_3level.xml``
+    the reference screenshot. The shelf is loaded from ``objects/shelf_3level.xml`` or ``objects/shelf_4level.xml``
     and fixed in place.
     """
 
@@ -152,9 +193,12 @@ class TableShelfPick(ManipulationEnv):
         table_full_size=_DEFAULT_TABLE_FULL_SIZE,
         table_friction=_DEFAULT_TABLE_FRICTION,
         table_offset=_DEFAULT_TABLE_OFFSET,
-        shelf_type="default",
+        shelf_type="4level",  # {3level, 4level}
         shelf_pos=(-0.10, 0.50, 0.8), #@user
         shelf_rotation=0,
+        marker_cube_shelf_x=0.0,
+        marker_cube_shelf_y=0.0,
+        marker_cube_shelf_z=None,
         object_x_range=(-0.28, -0.08),
         object_y_range=(-0.30, -0.18),
         z_rotation=None,
@@ -194,6 +238,11 @@ class TableShelfPick(ManipulationEnv):
         self.table_offset = np.array(table_offset, dtype=float)
         self.shelf_pos = np.array(shelf_pos, dtype=float)
         self.shelf_rotation = shelf_rotation
+        self.marker_cube_shelf_x = float(marker_cube_shelf_x)
+        self.marker_cube_shelf_y = float(marker_cube_shelf_y)
+        if marker_cube_shelf_z is None:
+            marker_cube_shelf_z = _DEFAULT_MARKER_CUBE_SHELF_Z[shelf_type]
+        self.marker_cube_shelf_z = float(marker_cube_shelf_z)
         self.object_x_range = tuple(object_x_range)
         self.object_y_range = tuple(object_y_range)
         self.z_rotation = z_rotation
@@ -281,7 +330,13 @@ class TableShelfPick(ManipulationEnv):
 
         obj_cls = _OBJECT_CLASS[self.object_type]
         self.object = obj_cls(name=obj_cls.__name__.replace("Object", ""))
-        self.shelf = _ShelfObject(name="Shelf", shelf_type=self.shelf_type)
+        self.shelf = _ShelfObject(
+            name="Shelf",
+            shelf_type=self.shelf_type,
+            marker_cube_shelf_x=self.marker_cube_shelf_x,
+            marker_cube_shelf_y=self.marker_cube_shelf_y,
+            marker_cube_shelf_z=self.marker_cube_shelf_z,
+        )
         self.shelf.set_pos(self.shelf_pos)
         self.shelf.set_euler([0.0, 0.0, self.shelf_rotation])
 

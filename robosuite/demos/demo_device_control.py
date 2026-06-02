@@ -192,7 +192,7 @@ if __name__ == "__main__":
         use_camera_obs=False,
         reward_shaping=True,
         control_freq=20,
-        hard_reset=False,
+        hard_reset=True,
     )
 
     # Wrap this environment in a visualization wrapper
