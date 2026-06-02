@@ -1,4 +1,4 @@
-<mujoco model="simple_shelf">
+<mujoco model="simple_shelf_3level">
     <compiler angle="degree" coordinate="local"/>
     <option integrator="RK4" timestep="0.002"/>
 
@@ -8,13 +8,15 @@
 
     <worldbody>
         <body name="shelf" pos="0 0 0">
-            <freejoint name="shelf_joint"/> <geom name="leg_fl" type="box" size="0.015 0.015 0.5" pos="-0.285 -0.135 0.5" material="shelf_mat" mass="0.5"/>
+            <freejoint name="shelf_joint"/>
+            <geom name="leg_fl" type="box" size="0.015 0.015 0.5" pos="-0.285 -0.135 0.5" material="shelf_mat" mass="0.5"/>
             <geom name="leg_fr" type="box" size="0.015 0.015 0.5" pos="0.285 -0.135 0.5" material="shelf_mat" mass="0.5"/>
             <geom name="leg_bl" type="box" size="0.015 0.015 0.5" pos="-0.285 0.135 0.5" material="shelf_mat" mass="0.5"/>
             <geom name="leg_br" type="box" size="0.015 0.015 0.5" pos="0.285 0.135 0.5" material="shelf_mat" mass="0.5"/>
 
-            <geom name="shelf_bottom" type="box" size="0.3 0.15 0.005" pos="0 0 0.2" material="shelf_mat" mass="1.0"/>
-            <geom name="shelf_top" type="box" size="0.3 0.15 0.005" pos="0 0 1.0" material="shelf_mat" mass="1.0"/>
+            <geom name="shelf_level_1" type="box" size="0.3 0.15 0.005" pos="0 0 0.2" material="shelf_mat" mass="1.0"/>
+            <geom name="shelf_level_2" type="box" size="0.3 0.15 0.005" pos="0 0 0.6" material="shelf_mat" mass="1.0"/>
+            <geom name="shelf_level_3" type="box" size="0.3 0.15 0.005" pos="0 0 1.0" material="shelf_mat" mass="1.0"/>
         </body>
     </worldbody>
 </mujoco>

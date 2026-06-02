@@ -28,15 +28,23 @@ _OBJECT_CLASS = {
     "can": CanObject,
 }
 
+_SHELF_XML = {
+    "default": "objects/shelf.xml",
+    "3level": "objects/shelf_3level.xml",
+}
+
 
 class _ShelfObject(MujocoXMLObject):
     """
-    Fixed shelf loaded from ``models/assets/objects/shelf.xml``.
+    Fixed shelf loaded from ``models/assets/objects/shelf.xml`` or ``shelf_3level.xml``.
     """
 
-    def __init__(self, name="shelf"):
+    def __init__(self, name="shelf", shelf_type="default"):
+        if shelf_type not in _SHELF_XML:
+            raise ValueError(f"shelf_type must be one of {list(_SHELF_XML.keys())}, got {shelf_type!r}")
+        self.shelf_type = shelf_type
         super().__init__(
-            xml_path_completion("objects/shelf.xml"),
+            xml_path_completion(_SHELF_XML[shelf_type]),
             name=name,
             joints=None,
             obj_type="all",
@@ -46,7 +54,7 @@ class _ShelfObject(MujocoXMLObject):
     def _get_object_subtree(self):
         obj = self.worldbody.find("./body[@name='shelf']")
         if obj is None:
-            raise ValueError("shelf.xml must contain a top-level body named 'shelf'")
+            raise ValueError(f"{_SHELF_XML[self.shelf_type]} must contain a top-level body named 'shelf'")
 
         obj = ET.fromstring(ET.tostring(obj))
         obj.attrib["name"] = "main"
@@ -128,7 +136,8 @@ class TableShelfPick(ManipulationEnv):
     Single-object table task with a shelf fixture to the side of the workspace.
 
     The layout is intended to resemble a robot reaching over a table with the shelf on the robot's left side, as in
-    the reference screenshot. The shelf is loaded from ``objects/shelf.xml`` and fixed in place.
+    the reference screenshot. The shelf is loaded from ``objects/shelf.xml`` (default) or ``objects/shelf_3level.xml``
+    and fixed in place.
     """
 
     def __init__(
@@ -143,7 +152,8 @@ class TableShelfPick(ManipulationEnv):
         table_full_size=_DEFAULT_TABLE_FULL_SIZE,
         table_friction=_DEFAULT_TABLE_FRICTION,
         table_offset=_DEFAULT_TABLE_OFFSET,
-        shelf_pos=(0.05, 0.35, 0.8), #@user
+        shelf_type="default",
+        shelf_pos=(-0.10, 0.50, 0.8), #@user
         shelf_rotation=0,
         object_x_range=(-0.28, -0.08),
         object_y_range=(-0.30, -0.18),
@@ -175,8 +185,10 @@ class TableShelfPick(ManipulationEnv):
         seed=None,
     ):
         assert object_type in _OBJECT_CLASS, "object_type must be one of {}".format(list(_OBJECT_CLASS.keys()))
+        assert shelf_type in _SHELF_XML, "shelf_type must be one of {}".format(list(_SHELF_XML.keys()))
 
         self.object_type = object_type
+        self.shelf_type = shelf_type
         self.table_full_size = tuple(table_full_size)
         self.table_friction = tuple(table_friction)
         self.table_offset = np.array(table_offset, dtype=float)
@@ -266,16 +278,10 @@ class TableShelfPick(ManipulationEnv):
             has_legs=True,
         )
         mujoco_arena.set_origin([0, 0, 0])
-        mujoco_arena.set_camera(
-            camera_name="agentview",
-            pos=[0.65, -1.35, 1.45],
-            quat=[0.56, 0.32, 0.28, 0.71],
-            camera_attribs={"fovy": "50"},
-        )
 
         obj_cls = _OBJECT_CLASS[self.object_type]
         self.object = obj_cls(name=obj_cls.__name__.replace("Object", ""))
-        self.shelf = _ShelfObject(name="Shelf")
+        self.shelf = _ShelfObject(name="Shelf", shelf_type=self.shelf_type)
         self.shelf.set_pos(self.shelf_pos)
         self.shelf.set_euler([0.0, 0.0, self.shelf_rotation])
 
