@@ -108,15 +108,38 @@ class Empty(ManipulationEnv):
             pos="1 0 0",
             rgba="0 1 0 1",
         )
+        # Cylinder markers for start (blue) and goal (red): oriented along EE Z-axis at runtime.
+        ET.SubElement(
+            mujoco_arena.worldbody,
+            "site",
+            name="start_position_marker",
+            type="cylinder",
+            size="0.02 0.05",
+            pos="0 0 -100",
+            rgba="0 0 1 0.9",
+        )
         ET.SubElement(
             mujoco_arena.worldbody,
             "site",
             name="goal_position_marker",
-            type="sphere",
-            size="0.03",
-            pos="0 0 -1",
+            type="cylinder",
+            size="0.02 0.05",
+            pos="0 0 -100",
             rgba="1 0 0 0.9",
         )
+        # Pre-allocated pool of subsampled trajectory waypoint markers (green cylinders).
+        # demo_playback_puma_dataset.py uses these at runtime; unused slots stay transparent.
+        # N_WAYPOINT_MARKER_SITES = 60
+        for _i in range(60):
+            ET.SubElement(
+                mujoco_arena.worldbody,
+                "site",
+                name=f"waypoint_marker_{_i}",
+                type="cylinder",
+                size="0.008 0.03",
+                pos="0 0 -100",
+                rgba="0 0.75 0 0",
+            )
 
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,

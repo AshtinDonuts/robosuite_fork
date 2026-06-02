@@ -12,6 +12,7 @@ from robosuite.environments.manipulation.door import Door
 from robosuite.environments.manipulation.wipe import Wipe
 from robosuite.environments.manipulation.empty import Empty
 from robosuite.environments.manipulation.table_pick import TablePick
+from robosuite.environments.manipulation.table_shelf_pick import TableShelfPick
 from robosuite.environments.manipulation.tool_hang import ToolHang
 from robosuite.environments.manipulation.two_arm_lift import TwoArmLift
 from robosuite.environments.manipulation.two_arm_peg_in_hole import TwoArmPegInHole
