@@ -39,6 +39,24 @@ _DEFAULT_MARKER_CUBE_SHELF_Z = {
     "4level": 0.55,   # level 2 top (0.472) and level 3 bottom (0.728)
 }
 _SHELF_MARKER_CUBE_HALF_SIZE = 0.04
+_DEFAULT_OBJECT_KEYPOINT_LOCAL_OFFSETS = np.array(
+    [
+        [0.0, 0.0, 0.0],
+        [0.04, 0.0, 0.0],
+        [0.0, 0.04, 0.0],
+        [0.0, 0.0, 0.04],
+    ],
+    dtype=float,
+)
+_DEFAULT_MARKER_CUBE_KEYPOINT_LOCAL_OFFSETS = np.array(
+    [
+        [0.0, 0.0, 0.0],
+        [_SHELF_MARKER_CUBE_HALF_SIZE, 0.0, 0.0],
+        [0.0, _SHELF_MARKER_CUBE_HALF_SIZE, 0.0],
+        [0.0, 0.0, _SHELF_MARKER_CUBE_HALF_SIZE],
+    ],
+    dtype=float,
+)
 
 
 class _ShelfObject(MujocoXMLObject):
@@ -134,17 +152,24 @@ class _ShelfObject(MujocoXMLObject):
         )
 
         half = _SHELF_MARKER_CUBE_HALF_SIZE
-        obj.append(
+        marker_cube = ET.Element(
+            "body",
+            attrib={
+                "name": "level_marker_cube",
+                "pos": (
+                    f"{self.marker_cube_shelf_x} "
+                    f"{self.marker_cube_shelf_y} "
+                    f"{self.marker_cube_shelf_z}"
+                ),
+            },
+        )
+        marker_cube.append(
             ET.Element(
                 "geom",
                 attrib={
-                    "name": "level_marker_cube",
+                    "name": "level_marker_cube_geom",
                     "type": "box",
-                    "pos": (
-                        f"{self.marker_cube_shelf_x} "
-                        f"{self.marker_cube_shelf_y} "
-                        f"{self.marker_cube_shelf_z}"
-                    ),
+                    "pos": "0 0 0",
                     "size": f"{half} {half} {half}",
                     "rgba": "1 0 0 1",
                     "contype": "0",
@@ -154,6 +179,7 @@ class _ShelfObject(MujocoXMLObject):
                 },
             )
         )
+        obj.append(marker_cube)
         return obj
 
     @property
@@ -374,6 +400,7 @@ class TableShelfPick(ManipulationEnv):
         super()._setup_references()
         self.obj_body_id = self.sim.model.body_name2id(self.object.root_body)
         self.shelf_body_id = self.sim.model.body_name2id(self.shelf.root_body)
+        self.marker_cube_body_id = self.sim.model.body_name2id(self.shelf.naming_prefix + "level_marker_cube")
 
     def _setup_observables(self):
         observables = super()._setup_observables()
@@ -436,6 +463,49 @@ class TableShelfPick(ManipulationEnv):
         sensors += [obj_pos, obj_quat, shelf_pos, shelf_quat]
         names += [f"{obj_name}_pos", f"{obj_name}_quat", "shelf_pos", "shelf_quat"]
         return sensors, names
+
+    @staticmethod
+    def _validate_keypoint_local_offsets(local_offsets):
+        local_offsets = np.array(local_offsets, dtype=float)
+        if local_offsets.ndim != 2 or local_offsets.shape[1] != 3:
+            raise ValueError(f"local_offsets must have shape (N, 3), got {local_offsets.shape}")
+        if local_offsets.shape[0] < 3:
+            raise ValueError(f"local_offsets must include at least 3 points, got {local_offsets.shape[0]}")
+        if np.linalg.matrix_rank(local_offsets[1:] - local_offsets[0]) < 2:
+            raise ValueError("local_offsets must include at least 3 non-collinear points")
+        return local_offsets
+
+    def get_body_keypoints(self, body_id, local_offsets):
+        """
+        Projects local keypoint offsets into the world frame from a MuJoCo body pose.
+
+        Args:
+            body_id (int): MuJoCo body id whose ``body_xpos`` and ``body_xmat`` define the object frame.
+            local_offsets (array-like): shape (N, 3), with N >= 3 non-collinear local keypoints.
+
+        Returns:
+            np.ndarray: shape (N, 3) world-frame keypoint coordinates.
+        """
+        local_offsets = self._validate_keypoint_local_offsets(local_offsets)
+        body_pos = np.array(self.sim.data.body_xpos[body_id], dtype=float)
+        body_mat = np.array(self.sim.data.body_xmat[body_id], dtype=float).reshape(3, 3)
+        return (body_mat @ local_offsets.T).T + body_pos
+
+    def get_object_keypoints(self, local_offsets=None):
+        """
+        Returns ground-truth keypoints for the active grasp object, e.g. milk by default.
+        """
+        if local_offsets is None:
+            local_offsets = _DEFAULT_OBJECT_KEYPOINT_LOCAL_OFFSETS
+        return self.get_body_keypoints(self.obj_body_id, local_offsets)
+
+    def get_marker_cube_keypoints(self, local_offsets=None):
+        """
+        Returns ground-truth keypoints for the fixed shelf marker cube.
+        """
+        if local_offsets is None:
+            local_offsets = _DEFAULT_MARKER_CUBE_KEYPOINT_LOCAL_OFFSETS
+        return self.get_body_keypoints(self.marker_cube_body_id, local_offsets)
 
     def _reset_internal(self):
         super()._reset_internal()
