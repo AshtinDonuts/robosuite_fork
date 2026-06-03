@@ -640,6 +640,7 @@ def main() -> None:
     from robosuite.controllers import load_part_controller_config
     from robosuite.controllers.composite.composite_controller import WholeBody
     from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
+    from robosuite.wrappers import VisualizationWrapper
 
     if args.teleop_scale_shoulder is None:
         args.teleop_scale_shoulder = 1.12 if args.robot == "VX300S" else 1.0
@@ -670,6 +671,8 @@ def main() -> None:
         control_freq=args.control_freq,
         reward_shaping=True,
     )
+    # Match demo_device_control: show grip_site / grip_site_cylinder EE aids each step.
+    env = VisualizationWrapper(env, indicator_configs=None)
     env.reset()
     if not args.no_render:
         env.render()

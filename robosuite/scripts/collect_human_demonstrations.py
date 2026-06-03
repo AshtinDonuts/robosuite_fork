@@ -498,8 +498,8 @@ if __name__ == "__main__":
         default=None,
         help="(x, y, z) offset for TableArena placement; z sets the tabletop height. "
         "Defaults to (0.03, 0.0, 1.0) for VX300S (matches arm reach), "
-        "or the environment default (0.15, 0.0, 0.9) for other robots. "
-        "Applies to environments that accept table_offset (e.g. Lift, Stack).",
+        "or (0.15, 0.0, 0.9) for other robots on Lift-style tasks. "
+        "Omitted for TableShelfPick so shelf/object layout matches demo_device_control.",
     )
     parser.add_argument(
         "--table-full-size",
@@ -508,7 +508,8 @@ if __name__ == "__main__":
         metavar=("x", "y", "z"),
         default=None,
         help="(x, y, z) dimensions of the table surface. "
-        "Defaults to (0.5, 0.8, 0.05) for VX300S, or the environment default otherwise.",
+        "Defaults to (0.5, 0.8, 0.05) for VX300S on Lift-style tasks. "
+        "Omitted for TableShelfPick so layout matches demo_device_control.",
     )
     parser.add_argument(
         "--leaderarm-topic",
@@ -658,12 +659,19 @@ if __name__ == "__main__":
     _is_vx300s = _primary_robot.upper() in ("VX300S",)
     _default_scale = 1.12 if _is_vx300s else 1.0
 
-    # Table geometry defaults: VX300S arm reach is best matched with a higher
-    # table (z=1.0) and slight forward shift in x, matching leaderarm.py main().
-    if args.table_offset is None:
-        args.table_offset = (0.03, 0.0, 1.0) if _is_vx300s else (0.15, 0.0, 0.9)
-    if args.table_full_size is None:
-        args.table_full_size = (0.5, 0.8, 0.05)
+    # demo_device_control does not override table/shelf/object layout for TableShelfPick;
+    # keep env defaults (table_offset, shelf_pos, object_x/y_range, etc.) unless the user
+    # passes --table-offset / --table-full-size explicitly.
+    _user_table_offset = args.table_offset
+    _user_table_full_size = args.table_full_size
+    _use_env_builtin_table_layout = args.environment == "TableShelfPick"
+
+    # Table geometry defaults for Lift-style tasks: VX300S arm reach is best matched
+    # with a higher table (z=1.0) and slight forward shift in x (leaderarm.py main()).
+    if _user_table_offset is None and not _use_env_builtin_table_layout:
+        _user_table_offset = (0.03, 0.0, 1.0) if _is_vx300s else (0.15, 0.0, 0.9)
+    if _user_table_full_size is None and not _use_env_builtin_table_layout:
+        _user_table_full_size = (0.5, 0.8, 0.05)
     if args.leaderarm_teleop_scale_shoulder is None:
         args.leaderarm_teleop_scale_shoulder = _default_scale
     if args.leaderarm_teleop_scale_elbow is None:
@@ -717,8 +725,7 @@ if __name__ == "__main__":
         config["env_configuration"] = args.config
 
     # Create environment
-    env = suite.make(
-        **config,
+    _make_kwargs = dict(
         has_renderer=True,
         renderer=args.renderer,
         has_offscreen_renderer=False,
@@ -727,9 +734,12 @@ if __name__ == "__main__":
         use_camera_obs=False,
         reward_shaping=True,
         control_freq=20,
-        table_full_size=tuple(args.table_full_size),
-        table_offset=tuple(args.table_offset),
     )
+    if _user_table_offset is not None:
+        _make_kwargs["table_offset"] = tuple(_user_table_offset)
+    if _user_table_full_size is not None:
+        _make_kwargs["table_full_size"] = tuple(_user_table_full_size)
+    env = suite.make(**config, **_make_kwargs)
     if args.deterministic_reset:
         env.deterministic_reset = True
     # Optional: force a fixed dirt layout (Wipe only) for cross-run reproducibility.
@@ -880,7 +890,7 @@ if __name__ == "__main__":
 
     # make a custom named directory
     new_dir = os.path.join(args.directory, args.eps_name)
-    os.makedirs(new_dir)
+    os.makedirs(new_dir, exist_ok=True)
 
     # Optionally snapshot the initial sampled dirt layout for later reproduction (Wipe only).
     if args.save_dirt_layout:

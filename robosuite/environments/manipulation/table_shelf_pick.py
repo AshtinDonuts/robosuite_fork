@@ -57,6 +57,37 @@ _DEFAULT_MARKER_CUBE_KEYPOINT_LOCAL_OFFSETS = np.array(
     ],
     dtype=float,
 )
+_OBJECT_KEYPOINT_SITE_PREFIX = "object_keypoint"
+_MARKER_CUBE_KEYPOINT_SITE_PREFIX = "marker_cube_keypoint"
+_OBJECT_KEYPOINT_RGBA = (0.0, 0.35, 1.0, 1.0)
+_MARKER_CUBE_KEYPOINT_RGBA = (0.0, 1.0, 0.15, 1.0)
+_KEYPOINT_SITE_SIZE = 0.01
+
+
+def _array_to_mjcf_string(array):
+    return " ".join(str(float(x)) for x in array)
+
+
+def _add_keypoint_sites(body, name_prefix, local_offsets, rgba, size, visible):
+    alpha = float(rgba[3]) if visible else 0.0
+    site_names = []
+    for i, offset in enumerate(local_offsets):
+        name = f"{name_prefix}_{i}"
+        site_names.append(name)
+        body.append(
+            ET.Element(
+                "site",
+                attrib={
+                    "name": name,
+                    "type": "sphere",
+                    "pos": _array_to_mjcf_string(offset),
+                    "size": str(float(size)),
+                    "rgba": _array_to_mjcf_string((*rgba[:3], alpha)),
+                    "group": "1",
+                },
+            )
+        )
+    return site_names
 
 
 class _ShelfObject(MujocoXMLObject):
@@ -71,6 +102,9 @@ class _ShelfObject(MujocoXMLObject):
         marker_cube_shelf_x=0.0,
         marker_cube_shelf_y=0.0,
         marker_cube_shelf_z=None,
+        marker_cube_keypoint_local_offsets=None,
+        visualize_keypoints=False,
+        keypoint_site_size=_KEYPOINT_SITE_SIZE,
     ):
         if shelf_type not in _SHELF_XML:
             raise ValueError(f"shelf_type must be one of {list(_SHELF_XML.keys())}, got {shelf_type!r}")
@@ -80,6 +114,11 @@ class _ShelfObject(MujocoXMLObject):
         if marker_cube_shelf_z is None:
             marker_cube_shelf_z = _DEFAULT_MARKER_CUBE_SHELF_Z[shelf_type]
         self.marker_cube_shelf_z = float(marker_cube_shelf_z)
+        if marker_cube_keypoint_local_offsets is None:
+            marker_cube_keypoint_local_offsets = _DEFAULT_MARKER_CUBE_KEYPOINT_LOCAL_OFFSETS
+        self.marker_cube_keypoint_local_offsets = np.array(marker_cube_keypoint_local_offsets, dtype=float)
+        self.visualize_keypoints = bool(visualize_keypoints)
+        self.keypoint_site_size = float(keypoint_site_size)
         super().__init__(
             xml_path_completion(_SHELF_XML[shelf_type]),
             name=name,
@@ -179,6 +218,14 @@ class _ShelfObject(MujocoXMLObject):
                 },
             )
         )
+        _add_keypoint_sites(
+            marker_cube,
+            _MARKER_CUBE_KEYPOINT_SITE_PREFIX,
+            self.marker_cube_keypoint_local_offsets,
+            _MARKER_CUBE_KEYPOINT_RGBA,
+            self.keypoint_site_size,
+            self.visualize_keypoints,
+        )
         obj.append(marker_cube)
         return obj
 
@@ -225,10 +272,14 @@ class TableShelfPick(ManipulationEnv):
         marker_cube_shelf_x=0.0,
         marker_cube_shelf_y=0.0,
         marker_cube_shelf_z=None,
-        object_x_range=(-0.28, -0.08),
-        object_y_range=(-0.30, -0.18),
+        object_x_range=(-0.28, -0.08), # Default: (-0.28, -0.08)
+        object_y_range=(-0.30, -0.18), # Default: (-0.30, -0.18)
         z_rotation=None,
         lift_height_margin=0.08,
+        visualize_keypoints=False,
+        object_keypoint_local_offsets=None,
+        marker_cube_keypoint_local_offsets=None,
+        keypoint_site_size=_KEYPOINT_SITE_SIZE,
         use_camera_obs=True,
         use_object_obs=True,
         reward_scale=1.0,
@@ -273,6 +324,16 @@ class TableShelfPick(ManipulationEnv):
         self.object_y_range = tuple(object_y_range)
         self.z_rotation = z_rotation
         self.lift_height_margin = lift_height_margin
+        if object_keypoint_local_offsets is None:
+            object_keypoint_local_offsets = _DEFAULT_OBJECT_KEYPOINT_LOCAL_OFFSETS
+        if marker_cube_keypoint_local_offsets is None:
+            marker_cube_keypoint_local_offsets = _DEFAULT_MARKER_CUBE_KEYPOINT_LOCAL_OFFSETS
+        self.object_keypoint_local_offsets = self._validate_keypoint_local_offsets(object_keypoint_local_offsets)
+        self.marker_cube_keypoint_local_offsets = self._validate_keypoint_local_offsets(
+            marker_cube_keypoint_local_offsets
+        )
+        self.visualize_keypoints = bool(visualize_keypoints)
+        self.keypoint_site_size = float(keypoint_site_size)
 
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
@@ -356,13 +417,21 @@ class TableShelfPick(ManipulationEnv):
 
         obj_cls = _OBJECT_CLASS[self.object_type]
         self.object = obj_cls(name=obj_cls.__name__.replace("Object", ""))
+        self.object_keypoint_site_names = self._add_object_keypoint_sites()
         self.shelf = _ShelfObject(
             name="Shelf",
             shelf_type=self.shelf_type,
             marker_cube_shelf_x=self.marker_cube_shelf_x,
             marker_cube_shelf_y=self.marker_cube_shelf_y,
             marker_cube_shelf_z=self.marker_cube_shelf_z,
+            marker_cube_keypoint_local_offsets=self.marker_cube_keypoint_local_offsets,
+            visualize_keypoints=self.visualize_keypoints,
+            keypoint_site_size=self.keypoint_site_size,
         )
+        self.marker_cube_keypoint_site_names = [
+            self.shelf.naming_prefix + f"{_MARKER_CUBE_KEYPOINT_SITE_PREFIX}_{i}"
+            for i in range(len(self.marker_cube_keypoint_local_offsets))
+        ]
         self.shelf.set_pos(self.shelf_pos)
         self.shelf.set_euler([0.0, 0.0, self.shelf_rotation])
 
@@ -401,6 +470,11 @@ class TableShelfPick(ManipulationEnv):
         self.obj_body_id = self.sim.model.body_name2id(self.object.root_body)
         self.shelf_body_id = self.sim.model.body_name2id(self.shelf.root_body)
         self.marker_cube_body_id = self.sim.model.body_name2id(self.shelf.naming_prefix + "level_marker_cube")
+        self.keypoint_site_ids = {
+            "object": [self.sim.model.site_name2id(name) for name in self.object_keypoint_site_names],
+            "marker_cube": [self.sim.model.site_name2id(name) for name in self.marker_cube_keypoint_site_names],
+        }
+        self.set_keypoint_visualization(self.visualize_keypoints)
 
     def _setup_observables(self):
         observables = super()._setup_observables()
@@ -464,6 +538,37 @@ class TableShelfPick(ManipulationEnv):
         names += [f"{obj_name}_pos", f"{obj_name}_quat", "shelf_pos", "shelf_quat"]
         return sensors, names
 
+    def _add_object_keypoint_sites(self):
+        target_body_names = {self.object.root_body, getattr(self.object, "_root_body", None)}
+        object_body = None
+        body_names = []
+        for body in self.object.worldbody.findall(".//body"):
+            body_name = body.get("name")
+            body_names.append(body_name)
+            if body_name in target_body_names:
+                object_body = body
+                break
+
+        if object_body is None:
+            raise ValueError(
+                f"Could not find object root body {self.object.root_body!r} for keypoint sites. "
+                f"Available object bodies: {body_names}"
+            )
+
+        site_names = [
+            self.object.naming_prefix + f"{_OBJECT_KEYPOINT_SITE_PREFIX}_{i}"
+            for i in range(len(self.object_keypoint_local_offsets))
+        ]
+        _add_keypoint_sites(
+            object_body,
+            self.object.naming_prefix + _OBJECT_KEYPOINT_SITE_PREFIX,
+            self.object_keypoint_local_offsets,
+            _OBJECT_KEYPOINT_RGBA,
+            self.keypoint_site_size,
+            self.visualize_keypoints,
+        )
+        return site_names
+
     @staticmethod
     def _validate_keypoint_local_offsets(local_offsets):
         local_offsets = np.array(local_offsets, dtype=float)
@@ -496,7 +601,7 @@ class TableShelfPick(ManipulationEnv):
         Returns ground-truth keypoints for the active grasp object, e.g. milk by default.
         """
         if local_offsets is None:
-            local_offsets = _DEFAULT_OBJECT_KEYPOINT_LOCAL_OFFSETS
+            local_offsets = self.object_keypoint_local_offsets
         return self.get_body_keypoints(self.obj_body_id, local_offsets)
 
     def get_marker_cube_keypoints(self, local_offsets=None):
@@ -504,8 +609,24 @@ class TableShelfPick(ManipulationEnv):
         Returns ground-truth keypoints for the fixed shelf marker cube.
         """
         if local_offsets is None:
-            local_offsets = _DEFAULT_MARKER_CUBE_KEYPOINT_LOCAL_OFFSETS
+            local_offsets = self.marker_cube_keypoint_local_offsets
         return self.get_body_keypoints(self.marker_cube_body_id, local_offsets)
+
+    def set_keypoint_visualization(self, enabled):
+        """
+        Shows or hides the object and marker-cube keypoint sites.
+        """
+        self.visualize_keypoints = bool(enabled)
+        self._set_keypoint_site_alpha(self.visualize_keypoints)
+
+    def _set_keypoint_site_alpha(self, visible):
+        if not hasattr(self, "keypoint_site_ids"):
+            return
+
+        alpha = 1.0 if visible else 0.0
+        for site_ids in self.keypoint_site_ids.values():
+            for site_id in site_ids:
+                self.sim.model.site_rgba[site_id][3] = alpha
 
     def _reset_internal(self):
         super()._reset_internal()
@@ -523,6 +644,7 @@ class TableShelfPick(ManipulationEnv):
 
     def visualize(self, vis_settings):
         super().visualize(vis_settings=vis_settings)
+        self._set_keypoint_site_alpha(self.visualize_keypoints and vis_settings.get("env", True))
         if vis_settings["grippers"]:
             for arm in self.robots[0].arms:
                 self._visualize_gripper_to_target(

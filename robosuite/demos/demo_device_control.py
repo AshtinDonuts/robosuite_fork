@@ -131,6 +131,11 @@ if __name__ == "__main__":
         help="Switch camera angle on gripper action",
     )
     parser.add_argument(
+        "--visualize-keypoints",
+        action="store_true",
+        help="Show environment keypoint markers if the selected environment supports them",
+    )
+    parser.add_argument(
         "--controller",
         type=str,
         default=None,
@@ -193,6 +198,7 @@ if __name__ == "__main__":
         reward_shaping=True,
         control_freq=20,
         hard_reset=True,
+        visualize_keypoints=args.visualize_keypoints,
     )
 
     # Wrap this environment in a visualization wrapper
