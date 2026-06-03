@@ -643,7 +643,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--leaderarm-eef-anchor-delay-sec",
         type=float,
-        default=5.0,
+        default=10.0, #@USER
         help="After each env reset, wait this many seconds before capturing EEF anchor poses "
         "(trossen_leaderarm_eef only; same behavior as robosuite.devices.leaderarm_eef __main__). "
         "Use 0 to disable.",

@@ -102,9 +102,11 @@ class UniformRandomSampler(ObjectPositionSampler):
 
         mujoco_objects (None or MujocoObject or list of MujocoObject): single model or list of MJCF object models
 
-        x_range (2-array of float): Specify the (min, max) relative x_range used to uniformly place objects
+        x_range (float or 2-array of float): Specify the fixed relative x position, or (min, max) relative x_range
+            used to uniformly place objects
 
-        y_range (2-array of float): Specify the (min, max) relative y_range used to uniformly place objects
+        y_range (float or 2-array of float): Specify the fixed relative y position, or (min, max) relative y_range
+            used to uniformly place objects
 
         rotation (None or float or Iterable):
             :`None`: Add uniform random random rotation
@@ -166,6 +168,9 @@ class UniformRandomSampler(ObjectPositionSampler):
         Returns:
             float: sampled x position
         """
+        if not isinstance(self.x_range, collections.abc.Iterable):
+            return float(self.x_range)
+
         minimum, maximum = self.x_range
         if self.ensure_object_boundary_in_range:
             minimum += object_horizontal_radius
@@ -182,6 +187,9 @@ class UniformRandomSampler(ObjectPositionSampler):
         Returns:
             float: sampled y position
         """
+        if not isinstance(self.y_range, collections.abc.Iterable):
+            return float(self.y_range)
+
         minimum, maximum = self.y_range
         if self.ensure_object_boundary_in_range:
             minimum += object_horizontal_radius

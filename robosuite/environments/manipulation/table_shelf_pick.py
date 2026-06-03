@@ -12,7 +12,7 @@ from robosuite.environments.manipulation.manipulation_env import ManipulationEnv
 from robosuite.models.arenas import TableArena
 from robosuite.models.objects import BreadObject, CanObject, CerealObject, MilkObject, MujocoXMLObject
 from robosuite.models.tasks import ManipulationTask
-from robosuite.utils.mjcf_utils import get_elements, xml_path_completion
+from robosuite.utils.mjcf_utils import get_elements, scale_site_element, xml_path_completion
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import SequentialCompositeSampler, UniformRandomSampler
 
@@ -102,6 +102,7 @@ class _ShelfObject(MujocoXMLObject):
         marker_cube_shelf_x=0.0,
         marker_cube_shelf_y=0.0,
         marker_cube_shelf_z=None,
+        shelf_scale=(1.0, 1.0, 1.0),
         marker_cube_keypoint_local_offsets=None,
         visualize_keypoints=False,
         keypoint_site_size=_KEYPOINT_SITE_SIZE,
@@ -109,6 +110,7 @@ class _ShelfObject(MujocoXMLObject):
         if shelf_type not in _SHELF_XML:
             raise ValueError(f"shelf_type must be one of {list(_SHELF_XML.keys())}, got {shelf_type!r}")
         self.shelf_type = shelf_type
+        self.shelf_scale = self._normalize_scale(shelf_scale, "shelf_scale")
         self.marker_cube_shelf_x = float(marker_cube_shelf_x)
         self.marker_cube_shelf_y = float(marker_cube_shelf_y)
         if marker_cube_shelf_z is None:
@@ -117,6 +119,7 @@ class _ShelfObject(MujocoXMLObject):
         if marker_cube_keypoint_local_offsets is None:
             marker_cube_keypoint_local_offsets = _DEFAULT_MARKER_CUBE_KEYPOINT_LOCAL_OFFSETS
         self.marker_cube_keypoint_local_offsets = np.array(marker_cube_keypoint_local_offsets, dtype=float)
+        self.scaled_marker_cube_keypoint_local_offsets = self.marker_cube_keypoint_local_offsets * self.shelf_scale
         self.visualize_keypoints = bool(visualize_keypoints)
         self.keypoint_site_size = float(keypoint_site_size)
         super().__init__(
@@ -125,6 +128,7 @@ class _ShelfObject(MujocoXMLObject):
             joints=None,
             obj_type="all",
             duplicate_collision_geoms=False,
+            scale=self.shelf_scale,
         )
 
     def _get_object_subtree(self):
@@ -233,16 +237,35 @@ class _ShelfObject(MujocoXMLObject):
     def bottom_offset(self):
         return np.array([0.0, 0.0, 0.0])
 
+    def set_scale(self, scale, obj=None):
+        super().set_scale(scale, obj=obj)
+        scale_array = self._normalize_scale(scale, "shelf_scale")
+        for _, site in get_elements(self._obj if obj is None else obj, "site"):
+            scale_site_element(site, scale_array)
+
     @property
     def top_offset(self):
-        return np.array([0.0, 0.0, 1.005])
+        return np.array([0.0, 0.0, 1.005 * self.shelf_scale[2]])
 
     @property
     def horizontal_radius(self):
-        return 0.34
+        return max(0.34 * self.shelf_scale[0], 0.17 * self.shelf_scale[1])
 
     def get_bounding_box_half_size(self):
-        return np.array([0.34, 0.17, 0.5025])
+        return np.array([0.34, 0.17, 0.5025]) * self.shelf_scale
+
+    @staticmethod
+    def _normalize_scale(scale, name):
+        if np.isscalar(scale):
+            scale_array = np.array([float(scale)] * 3, dtype=float)
+        else:
+            scale_array = np.array(scale, dtype=float)
+            if scale_array.shape != (3,):
+                raise ValueError(f"{name} must be a positive scalar or 3-tuple, got {scale}")
+
+        if np.any(scale_array <= 0.0):
+            raise ValueError(f"{name} must be positive, got {scale}")
+        return scale_array
 
 
 class TableShelfPick(ManipulationEnv):
@@ -267,15 +290,17 @@ class TableShelfPick(ManipulationEnv):
         table_friction=_DEFAULT_TABLE_FRICTION,
         table_offset=_DEFAULT_TABLE_OFFSET,
         shelf_type="4level",  # {3level, 4level}
-        shelf_pos=(-0.10, 0.50, 0.8), #@user
+        shelf_pos=(0.0, 0.50, 0.8), #@user
         shelf_rotation=0,
         marker_cube_shelf_x=0.0,
         marker_cube_shelf_y=0.0,
         marker_cube_shelf_z=None,
-        milk_object_scale=1.5,
-        object_x_range=(-0.18, 0.18), # Default: (-0.28, -0.08)
-        object_y_range=(-0.18, 0.18), # Default: (-0.30, -0.18)
-        z_rotation=None,
+        shelf_scale=(1.3, 1.0, 1.0), #@USER change here.
+        milk_object_scale=1.6,
+        # object_-_range : Can pass single value or tuple
+        object_x_range=0.1, # Default: (-0.28, -0.08)
+        object_y_range=0.1, # Default: (-0.30, -0.18)
+        z_rotation=0, # None for random
         lift_height_margin=0.08,
         visualize_keypoints=False,
         object_keypoint_local_offsets=None,
@@ -316,6 +341,7 @@ class TableShelfPick(ManipulationEnv):
         self.table_offset = np.array(table_offset, dtype=float)
         self.shelf_pos = np.array(shelf_pos, dtype=float)
         self.shelf_rotation = shelf_rotation
+        self.shelf_scale = _ShelfObject._normalize_scale(shelf_scale, "shelf_scale")
         self.marker_cube_shelf_x = float(marker_cube_shelf_x)
         self.marker_cube_shelf_y = float(marker_cube_shelf_y)
         if marker_cube_shelf_z is None:
@@ -324,8 +350,8 @@ class TableShelfPick(ManipulationEnv):
         self.milk_object_scale = float(milk_object_scale)
         if self.milk_object_scale <= 0.0:
             raise ValueError(f"milk_object_scale must be positive, got {self.milk_object_scale}")
-        self.object_x_range = tuple(object_x_range)
-        self.object_y_range = tuple(object_y_range)
+        self.object_x_range = self._normalize_object_placement_axis(object_x_range, "object_x_range")
+        self.object_y_range = self._normalize_object_placement_axis(object_y_range, "object_y_range")
         self.z_rotation = z_rotation
         self.lift_height_margin = lift_height_margin
         using_default_object_keypoint_offsets = object_keypoint_local_offsets is None
@@ -412,6 +438,8 @@ class TableShelfPick(ManipulationEnv):
         super()._load_model()
 
         xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
+        xpos = list(xpos)
+        xpos[2] -= 0.1
         self.robots[0].robot_model.set_base_xpos(xpos)
 
         mujoco_arena = TableArena(
@@ -435,6 +463,7 @@ class TableShelfPick(ManipulationEnv):
             marker_cube_shelf_x=self.marker_cube_shelf_x,
             marker_cube_shelf_y=self.marker_cube_shelf_y,
             marker_cube_shelf_z=self.marker_cube_shelf_z,
+            shelf_scale=self.shelf_scale,
             marker_cube_keypoint_local_offsets=self.marker_cube_keypoint_local_offsets,
             visualize_keypoints=self.visualize_keypoints,
             keypoint_site_size=self.keypoint_site_size,
@@ -581,6 +610,16 @@ class TableShelfPick(ManipulationEnv):
         return site_names
 
     @staticmethod
+    def _normalize_object_placement_axis(axis_value, name):
+        if np.isscalar(axis_value):
+            return float(axis_value)
+
+        axis_range = tuple(axis_value)
+        if len(axis_range) != 2:
+            raise ValueError(f"{name} must be a scalar fixed position or a (min, max) range, got {axis_value}")
+        return tuple(float(v) for v in axis_range)
+
+    @staticmethod
     def _validate_keypoint_local_offsets(local_offsets):
         local_offsets = np.array(local_offsets, dtype=float)
         if local_offsets.ndim != 2 or local_offsets.shape[1] != 3:
@@ -620,7 +659,7 @@ class TableShelfPick(ManipulationEnv):
         Returns ground-truth keypoints for the fixed shelf marker cube.
         """
         if local_offsets is None:
-            local_offsets = self.marker_cube_keypoint_local_offsets
+            local_offsets = self.shelf.scaled_marker_cube_keypoint_local_offsets
         return self.get_body_keypoints(self.marker_cube_body_id, local_offsets)
 
     def set_keypoint_visualization(self, enabled):
