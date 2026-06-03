@@ -94,13 +94,14 @@ class MilkObject(MujocoXMLObject):
     Milk carton object (used in PickPlace)
     """
 
-    def __init__(self, name):
+    def __init__(self, name, scale=None):
         super().__init__(
             xml_path_completion("objects/milk.xml"),
             name=name,
             joints=[dict(type="free", damping="0.0005")],
             obj_type="all",
             duplicate_collision_geoms=True,
+            scale=scale,
         )
 
 

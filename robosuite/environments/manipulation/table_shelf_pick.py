@@ -272,8 +272,9 @@ class TableShelfPick(ManipulationEnv):
         marker_cube_shelf_x=0.0,
         marker_cube_shelf_y=0.0,
         marker_cube_shelf_z=None,
-        object_x_range=(-0.28, -0.08), # Default: (-0.28, -0.08)
-        object_y_range=(-0.30, -0.18), # Default: (-0.30, -0.18)
+        milk_object_scale=1.5,
+        object_x_range=(-0.18, 0.18), # Default: (-0.28, -0.08)
+        object_y_range=(-0.18, 0.18), # Default: (-0.30, -0.18)
         z_rotation=None,
         lift_height_margin=0.08,
         visualize_keypoints=False,
@@ -320,14 +321,20 @@ class TableShelfPick(ManipulationEnv):
         if marker_cube_shelf_z is None:
             marker_cube_shelf_z = _DEFAULT_MARKER_CUBE_SHELF_Z[shelf_type]
         self.marker_cube_shelf_z = float(marker_cube_shelf_z)
+        self.milk_object_scale = float(milk_object_scale)
+        if self.milk_object_scale <= 0.0:
+            raise ValueError(f"milk_object_scale must be positive, got {self.milk_object_scale}")
         self.object_x_range = tuple(object_x_range)
         self.object_y_range = tuple(object_y_range)
         self.z_rotation = z_rotation
         self.lift_height_margin = lift_height_margin
+        using_default_object_keypoint_offsets = object_keypoint_local_offsets is None
         if object_keypoint_local_offsets is None:
             object_keypoint_local_offsets = _DEFAULT_OBJECT_KEYPOINT_LOCAL_OFFSETS
         if marker_cube_keypoint_local_offsets is None:
             marker_cube_keypoint_local_offsets = _DEFAULT_MARKER_CUBE_KEYPOINT_LOCAL_OFFSETS
+        if using_default_object_keypoint_offsets and self.object_type == "milk" and self.milk_object_scale != 1.0:
+            object_keypoint_local_offsets = np.array(object_keypoint_local_offsets, dtype=float) * self.milk_object_scale
         self.object_keypoint_local_offsets = self._validate_keypoint_local_offsets(object_keypoint_local_offsets)
         self.marker_cube_keypoint_local_offsets = self._validate_keypoint_local_offsets(
             marker_cube_keypoint_local_offsets
@@ -416,7 +423,11 @@ class TableShelfPick(ManipulationEnv):
         mujoco_arena.set_origin([0, 0, 0])
 
         obj_cls = _OBJECT_CLASS[self.object_type]
-        self.object = obj_cls(name=obj_cls.__name__.replace("Object", ""))
+        obj_name = obj_cls.__name__.replace("Object", "")
+        if self.object_type == "milk":
+            self.object = obj_cls(name=obj_name, scale=self.milk_object_scale)
+        else:
+            self.object = obj_cls(name=obj_name)
         self.object_keypoint_site_names = self._add_object_keypoint_sites()
         self.shelf = _ShelfObject(
             name="Shelf",
@@ -638,9 +649,8 @@ class TableShelfPick(ManipulationEnv):
             self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
 
     def _check_success(self):
-        object_height = float(self.sim.data.body_xpos[self.obj_body_id][2])
-        table_height = float(self.model.mujoco_arena.table_offset[2])
-        return object_height > table_height + self.lift_height_margin
+        """No automated success; demos end on manual reset (e.g. ``q`` in teleop)."""
+        return False
 
     def visualize(self, vis_settings):
         super().visualize(vis_settings=vis_settings)
