@@ -93,6 +93,8 @@ def _add_keypoint_sites(body, name_prefix, local_offsets, rgba, size, visible):
 class _ShelfObject(MujocoXMLObject):
     """
     Fixed shelf loaded from ``models/assets/objects/shelf_3level.xml`` or ``shelf_4level.xml``.
+
+    NOTE: do NOT overload here. It will get overridden in TableShelfPick.
     """
 
     def __init__(
@@ -298,8 +300,8 @@ class TableShelfPick(ManipulationEnv):
         shelf_scale=(1.3, 1.0, 1.0), #@USER change here.
         milk_object_scale=1.6,
         # object_-_range : Can pass single value or tuple
-        object_x_range=0.1, # Default: (-0.28, -0.08)
-        object_y_range=0.1, # Default: (-0.30, -0.18)
+        object_x_range=0.14, # Default: (-0.28, -0.08)
+        object_y_range=-0.05, # Default: (-0.30, -0.18)
         z_rotation=0, # None for random
         lift_height_margin=0.08,
         visualize_keypoints=False,
@@ -439,7 +441,7 @@ class TableShelfPick(ManipulationEnv):
 
         xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
         xpos = list(xpos)
-        xpos[2] -= 0.1
+        xpos[2] -= 0.0 # @USER
         self.robots[0].robot_model.set_base_xpos(xpos)
 
         mujoco_arena = TableArena(
