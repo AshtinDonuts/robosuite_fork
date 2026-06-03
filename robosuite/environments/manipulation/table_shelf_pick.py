@@ -121,7 +121,11 @@ class _ShelfObject(MujocoXMLObject):
         if marker_cube_keypoint_local_offsets is None:
             marker_cube_keypoint_local_offsets = _DEFAULT_MARKER_CUBE_KEYPOINT_LOCAL_OFFSETS
         self.marker_cube_keypoint_local_offsets = np.array(marker_cube_keypoint_local_offsets, dtype=float)
-        self.scaled_marker_cube_keypoint_local_offsets = self.marker_cube_keypoint_local_offsets * self.shelf_scale
+        self.marker_cube_scale = np.array([self.shelf_scale[2]] * 3, dtype=float)
+        self.scaled_marker_cube_keypoint_local_offsets = (
+            self.marker_cube_keypoint_local_offsets * self.marker_cube_scale
+        )
+        self.marker_cube_xml_scale = self.marker_cube_scale / self.shelf_scale
         self.visualize_keypoints = bool(visualize_keypoints)
         self.keypoint_site_size = float(keypoint_site_size)
         super().__init__(
@@ -215,7 +219,7 @@ class _ShelfObject(MujocoXMLObject):
                     "name": "level_marker_cube_geom",
                     "type": "box",
                     "pos": "0 0 0",
-                    "size": f"{half} {half} {half}",
+                    "size": _array_to_mjcf_string(np.array([half, half, half]) * self.marker_cube_xml_scale),
                     "rgba": "1 0 0 1",
                     "contype": "0",
                     "conaffinity": "0",
@@ -227,7 +231,7 @@ class _ShelfObject(MujocoXMLObject):
         _add_keypoint_sites(
             marker_cube,
             _MARKER_CUBE_KEYPOINT_SITE_PREFIX,
-            self.marker_cube_keypoint_local_offsets,
+            self.marker_cube_keypoint_local_offsets * self.marker_cube_xml_scale,
             _MARKER_CUBE_KEYPOINT_RGBA,
             self.keypoint_site_size,
             self.visualize_keypoints,
@@ -292,15 +296,15 @@ class TableShelfPick(ManipulationEnv):
         table_friction=_DEFAULT_TABLE_FRICTION,
         table_offset=_DEFAULT_TABLE_OFFSET,
         shelf_type="4level",  # {3level, 4level}
-        shelf_pos=(0.0, 0.50, 0.8), #@user
+        shelf_pos=(0.0, 0.3, 0.8), #@user
         shelf_rotation=0,
-        marker_cube_shelf_x=0.0,
-        marker_cube_shelf_y=0.0,
+        marker_cube_shelf_x=-0.2,
+        marker_cube_shelf_y=-0.1,
         marker_cube_shelf_z=None,
-        shelf_scale=(1.3, 1.0, 1.0), #@USER change here.
-        milk_object_scale=1.6,
+        shelf_scale=(1.3, 1.0, 0.7), #@USER change here.
+        milk_object_scale=1.0,
         # object_-_range : Can pass single value or tuple
-        object_x_range=0.14, # Default: (-0.28, -0.08)
+        object_x_range=-0.10, # Default: (-0.28, -0.08)
         object_y_range=-0.05, # Default: (-0.30, -0.18)
         z_rotation=0, # None for random
         lift_height_margin=0.08,
@@ -441,7 +445,7 @@ class TableShelfPick(ManipulationEnv):
 
         xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
         xpos = list(xpos)
-        xpos[2] -= 0.0 # @USER
+        xpos[2] -= 0.2 # @USER
         self.robots[0].robot_model.set_base_xpos(xpos)
 
         mujoco_arena = TableArena(
