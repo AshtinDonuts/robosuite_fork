@@ -63,8 +63,12 @@ _OBJECT_KEYPOINT_RGBA = (0.0, 0.35, 1.0, 1.0)
 _MARKER_CUBE_KEYPOINT_RGBA = (0.0, 1.0, 0.15, 1.0)
 _KEYPOINT_SITE_SIZE = 0.01
 _WRIST_CAMERA_NAME = "eye_in_hand"
-_WRIST_CAMERA_POS = (0.05, 0.0, 0.0)
-_WRIST_CAMERA_QUAT = (0.0, 0.707108, -0.707108, 0.0)
+# Gripper ``eef`` bodies use +Z as the approach axis; look along +Z (+90° CW roll, then 180° about approach).
+_WRIST_CAMERA_POS_EEF = (0.0, 0.0, 0.05)
+_WRIST_CAMERA_QUAT_EEF = (0.0, -0.707108, 0.707108, 0.0)
+# Fallback when no ``eef`` child exists: mount on the arm EEF body with +X approach (identity mount).
+_WRIST_CAMERA_POS_MOUNT = (0.05, 0.0, 0.0)
+_WRIST_CAMERA_QUAT_MOUNT = (-0.5, 0.5, 0.5, -0.5)
 _WRIST_CAMERA_FOVY = 75
 
 
@@ -534,20 +538,34 @@ class TableShelfPick(ManipulationEnv):
             if has_arm_wrist_camera:
                 continue
 
-            eef_body_name = robot_model.eef_name[arm]
-            eef_body = robot_model.root.find(f".//body[@name='{eef_body_name}']")
-            if eef_body is None:
-                raise ValueError(f"Could not find EEF body {eef_body_name!r} to attach wrist camera")
+            mount_body_name = robot_model.eef_name[arm]
+            mount_body = robot_model.root.find(f".//body[@name='{mount_body_name}']")
+            if mount_body is None:
+                raise ValueError(f"Could not find EEF mount body {mount_body_name!r} to attach wrist camera")
+
+            camera_body = None
+            gripper = robot_model.grippers.get(mount_body_name)
+            if gripper is not None:
+                gripper_eef_name = gripper.correct_naming("eef")
+                camera_body = robot_model.root.find(f".//body[@name='{gripper_eef_name}']")
+
+            if camera_body is not None:
+                camera_pos = _WRIST_CAMERA_POS_EEF
+                camera_quat = _WRIST_CAMERA_QUAT_EEF
+            else:
+                camera_body = mount_body
+                camera_pos = _WRIST_CAMERA_POS_MOUNT
+                camera_quat = _WRIST_CAMERA_QUAT_MOUNT
 
             camera_suffix = _WRIST_CAMERA_NAME if len(arms) == 1 else f"{arm}_{_WRIST_CAMERA_NAME}"
-            eef_body.append(
+            camera_body.append(
                 ET.Element(
                     "camera",
                     attrib={
                         "mode": "fixed",
                         "name": robot_model.naming_prefix + camera_suffix,
-                        "pos": _array_to_mjcf_string(_WRIST_CAMERA_POS),
-                        "quat": _array_to_mjcf_string(_WRIST_CAMERA_QUAT),
+                        "pos": _array_to_mjcf_string(camera_pos),
+                        "quat": _array_to_mjcf_string(camera_quat),
                         "fovy": str(_WRIST_CAMERA_FOVY),
                     },
                 )
