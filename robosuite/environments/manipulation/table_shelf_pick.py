@@ -64,12 +64,17 @@ _MARKER_CUBE_KEYPOINT_RGBA = (0.0, 1.0, 0.15, 1.0)
 _KEYPOINT_SITE_SIZE = 0.01
 _WRIST_CAMERA_NAME = "eye_in_hand"
 # Gripper ``eef`` bodies use +Z as the approach axis; look along +Z (+90° CW roll, then 180° about approach).
-_WRIST_CAMERA_POS_EEF = (0.0, 0.0, 0.05)
+_WRIST_CAMERA_POS_EEF = (-0.06, 0.0, -0.02)
 _WRIST_CAMERA_QUAT_EEF = (0.0, -0.707108, 0.707108, 0.0)
+# _WRIST_CAMERA_QUAT_EEF = (0, -0.42261826, 0.90630779, 0) # Wrong
+
 # Fallback when no ``eef`` child exists: mount on the arm EEF body with +X approach (identity mount).
-_WRIST_CAMERA_POS_MOUNT = (0.05, 0.0, 0.0)
-_WRIST_CAMERA_QUAT_MOUNT = (-0.5, 0.5, 0.5, -0.5)
-_WRIST_CAMERA_FOVY = 75
+# _WRIST_CAMERA_POS_MOUNT = (0.0, 0.0, 0.0)
+# _WRIST_CAMERA_QUAT_MOUNT = (-0.5, 0.5, 0.5, -0.5)
+_WRIST_CAMERA_POS_MOUNT = _WRIST_CAMERA_POS_EEF
+_WRIST_CAMERA_QUAT_MOUNT = _WRIST_CAMERA_QUAT_EEF
+
+_WRIST_CAMERA_FOVY = 100 # 75
 
 
 def _array_to_mjcf_string(array):
@@ -453,7 +458,7 @@ class TableShelfPick(ManipulationEnv):
 
         xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
         xpos = list(xpos)
-        xpos[2] -= 0.15 # @USER
+        xpos[2] -= 0.25 # @USER
         xpos[0] += 0.05
         self.robots[0].robot_model.set_base_xpos(xpos)
         for robot in self.robots:
