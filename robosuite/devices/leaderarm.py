@@ -745,6 +745,7 @@ def main() -> None:
     from robosuite.controllers import load_part_controller_config
     from robosuite.controllers.composite.composite_controller import WholeBody
     from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
+    from robosuite.wrappers import VisualizationWrapper
 
     arm_part_config = load_part_controller_config(default_controller="JOINT_POSITION")
     controller_config = refactor_composite_controller_config(
@@ -778,6 +779,8 @@ def main() -> None:
         make_kwargs["table_offset"] = _lift_table_offset
 
     env = suite.make(args.environment, **make_kwargs)
+    # Match demo_device_control: show grip_site / grip_site_cylinder EE aids each step.
+    env = VisualizationWrapper(env, indicator_configs=None)
     env.reset()
     if not args.no_render:
         env.render()
