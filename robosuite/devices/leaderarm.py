@@ -770,7 +770,7 @@ def main() -> None:
     parser.add_argument(
         "--gripper-close-threshold",
         type=float,
-        default=0.0,
+        default=0.15,
         help="Joint position below this (rad) counts as closed (trossen: left_finger; ros2: if --gripper-joint set).",
     )
     parser.add_argument(

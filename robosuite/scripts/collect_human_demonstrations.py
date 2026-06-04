@@ -567,8 +567,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--leaderarm-topic",
         type=str,
-        default="/joint_states",
-        help="ROS 2 JointState topic for trossen_leaderarm / ros2_leaderarm.",
+        default=None,
+        help="ROS 2 JointState topic for trossen_leaderarm / ros2_leaderarm. "
+        "Defaults to the device implementation default.",
     )
     parser.add_argument(
         "--leaderarm-node-name",
@@ -591,20 +592,23 @@ if __name__ == "__main__":
     parser.add_argument(
         "--leaderarm-gripper-close-threshold",
         type=float,
-        default=0.01,
-        help="Grasp closed when gripper joint position is below this (rad), if --leaderarm-gripper-joint is set.",
+        default=None,
+        help="Grasp closed when gripper joint position is below this (rad), if --leaderarm-gripper-joint is set. "
+        "Defaults to the device implementation default.",
     )
     parser.add_argument(
         "--leaderarm-joint-sensitivity",
         type=float,
-        default=1.0,
-        help="Scales joint deltas from the leader arm (trossen_leaderarm / ros2_leaderarm).",
+        default=None,
+        help="Scales joint deltas from the leader arm (trossen_leaderarm / ros2_leaderarm). "
+        "Defaults to the device implementation default.",
     )
     parser.add_argument(
         "--leaderarm-joint-limits-safety-factor",
         type=float,
-        default=0.95,
-        help="Clamp leader targets within this fraction of each joint range (0–1).",
+        default=None,
+        help="Clamp leader targets within this fraction of each joint range (0–1). "
+        "Defaults to the device implementation default.",
     )
     parser.add_argument(
         "--leaderarm-teleop-scale-shoulder",
@@ -881,12 +885,16 @@ if __name__ == "__main__":
         )
         _leaderarm_common_kw = dict(
             env=env,
-            topic=args.leaderarm_topic,
-            joint_sensitivity=args.leaderarm_joint_sensitivity,
-            joint_limits_safety_factor=args.leaderarm_joint_limits_safety_factor,
-            gripper_close_threshold=args.leaderarm_gripper_close_threshold,
             leader_joint_scale=_teleop_scale,
         )
+        if args.leaderarm_topic is not None:
+            _leaderarm_common_kw["topic"] = args.leaderarm_topic
+        if args.leaderarm_joint_sensitivity is not None:
+            _leaderarm_common_kw["joint_sensitivity"] = args.leaderarm_joint_sensitivity
+        if args.leaderarm_joint_limits_safety_factor is not None:
+            _leaderarm_common_kw["joint_limits_safety_factor"] = args.leaderarm_joint_limits_safety_factor
+        if args.leaderarm_gripper_close_threshold is not None:
+            _leaderarm_common_kw["gripper_close_threshold"] = args.leaderarm_gripper_close_threshold
         if args.leaderarm_teleop_scale_pivot is not None:
             _leaderarm_common_kw["leader_joint_scale_pivot"] = tuple(args.leaderarm_teleop_scale_pivot)
         if args.leaderarm_joint_angle_scale_joints is not None:
@@ -939,7 +947,6 @@ if __name__ == "__main__":
         )
         _eef_kw = dict(
             env=env,
-            topic=args.leaderarm_topic,
             position_scale=args.leaderarm_eef_position_scale,
             position_scale_xyz=_position_scale_xyz,
             position_offset_xyz=np.array(args.leaderarm_eef_position_offset, dtype=float),
@@ -948,8 +955,11 @@ if __name__ == "__main__":
             calibration_step=args.leaderarm_eef_calibration_step,
             calibration_step_rot=args.leaderarm_eef_calibration_step_rot,
             leader_joint_scale=_teleop_scale,
-            gripper_close_threshold=args.leaderarm_gripper_close_threshold,
         )
+        if args.leaderarm_topic is not None:
+            _eef_kw["topic"] = args.leaderarm_topic
+        if args.leaderarm_gripper_close_threshold is not None:
+            _eef_kw["gripper_close_threshold"] = args.leaderarm_gripper_close_threshold
         if args.leaderarm_teleop_scale_pivot is not None:
             _eef_kw["leader_joint_scale_pivot"] = tuple(args.leaderarm_teleop_scale_pivot)
         if args.leaderarm_node_name is not None:
