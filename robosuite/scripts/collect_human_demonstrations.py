@@ -91,8 +91,33 @@ def _device_input2action(device, goal_update_mode):
     return device.input2action()
 
 
+def _prime_data_collection_from_current_state(env):
+    """Make delayed recording start from the current simulator state."""
+    if not hasattr(env, "_current_task_instance_state"):
+        return
+    env.states = []
+    env.action_infos = []
+    env.successful = False
+    env.has_interaction = False
+    env.t = 0
+    if getattr(env, "use_env_xml_for_reset", False):
+        env._current_task_instance_xml = env.env.model.get_xml()
+    else:
+        env._current_task_instance_xml = env.env.sim.model.get_xml()
+    env._current_task_instance_state = np.array(env.env.sim.get_state().flatten())
+    print("Data collection primed at current state; subsequent steps will be recorded.", flush=True)
+
+
+def _flush_data_collection(env):
+    """Flush the current DataCollectionWrapper episode before HDF5 consolidation."""
+    if not hasattr(env, "_flush") or not getattr(env, "has_interaction", False):
+        return
+    env._flush()
+    env.has_interaction = False
+
+
 class _RecordingHotkeys:
-    """Tracks Ctrl+D / Ctrl+F episode recording hotkeys."""
+    """Tracks recording hotkeys and prints enough diagnostics to debug focus issues."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -100,23 +125,34 @@ class _RecordingHotkeys:
         self._recording = False
         self._stop_requested = False
         self._listener = None
+        self._key_cls = None
 
     def start(self):
         from pynput.keyboard import Key, Listener
 
         self._key_cls = Key
+        print(
+            "Recording hotkeys enabled: press Ctrl+D to START recording, "
+            "Ctrl+F to STOP and save. If Ctrl combos do not register, press plain 'd' / 'f'.",
+            flush=True,
+        )
         self._listener = Listener(on_press=self._on_press, on_release=self._on_release)
         self._listener.start()
+        self._listener.wait()
+        print("Recording hotkey listener is running. Focus the sim/viewer or terminal before pressing hotkeys.", flush=True)
 
     def close(self):
         if self._listener is not None:
             self._listener.stop()
             self._listener = None
+            print("Recording hotkey listener stopped.", flush=True)
 
     def reset_episode(self):
         with self._lock:
             self._recording = False
             self._stop_requested = False
+            self._ctrl_down = False
+        print("Recording state reset: waiting for Ctrl+D (or plain 'd') to start.", flush=True)
 
     @property
     def recording(self):
@@ -128,10 +164,35 @@ class _RecordingHotkeys:
         with self._lock:
             return self._stop_requested
 
+    def _describe_key(self, key):
+        char = getattr(key, "char", None)
+        if char is None:
+            return repr(key)
+        return f"char={char!r}, key={key!r}"
+
+    def _set_recording_started(self, source):
+        if self._recording:
+            print(f"Recording already active; ignored {source}.", flush=True)
+            return
+        self._recording = True
+        self._stop_requested = False
+        print(f"Recording started ({source}).", flush=True)
+
+    def _set_recording_stopped(self, source):
+        if not self._recording:
+            print(f"Recording is not active; ignored {source}.", flush=True)
+            return
+        self._recording = False
+        self._stop_requested = True
+        print(f"Recording stopped ({source}); ending rollout and saving trajectory.", flush=True)
+
     def _on_press(self, key):
+        print(f"Recording hotkey press seen: {self._describe_key(key)}", flush=True)
+
         if key in (self._key_cls.ctrl, self._key_cls.ctrl_l, self._key_cls.ctrl_r):
             with self._lock:
                 self._ctrl_down = True
+            print("Ctrl is down. Press d to start, or f to stop.", flush=True)
             return
 
         char = getattr(key, "char", None)
@@ -140,20 +201,18 @@ class _RecordingHotkeys:
 
         char = char.lower()
         with self._lock:
-            if self._ctrl_down or char in ("\x04", "\x06"):
-                if char in ("d", "\x04") and not self._recording:
-                    self._recording = True
-                    self._stop_requested = False
-                    print("Recording started (Ctrl+D).", flush=True)
-                elif char in ("f", "\x06") and self._recording:
-                    self._recording = False
-                    self._stop_requested = True
-                    print("Recording stopped (Ctrl+F).", flush=True)
+            ctrl_combo = self._ctrl_down or char in ("\x04", "\x06")
+            if char in ("d", "\x04"):
+                self._set_recording_started("Ctrl+D" if ctrl_combo else "fallback d")
+            elif char in ("f", "\x06"):
+                self._set_recording_stopped("Ctrl+F" if ctrl_combo else "fallback f")
 
     def _on_release(self, key):
+        print(f"Recording hotkey release seen: {self._describe_key(key)}", flush=True)
         if key in (self._key_cls.ctrl, self._key_cls.ctrl_l, self._key_cls.ctrl_r):
             with self._lock:
                 self._ctrl_down = False
+            print("Ctrl released.", flush=True)
 
 
 def _run_leaderarm_eef_anchor_delay_countdown(env, delay_sec: float) -> None:
@@ -263,12 +322,13 @@ def collect_human_trajectory(
 
     x_pos, x_rot, x_dot, delta_t, gripper_action = None, None, None, None, None
     prev_t = None
+    recording_started = recording_hotkeys is None
+    if recording_hotkeys is not None:
+        recording_hotkeys.reset_episode()
+        print("Move to the desired start pose, then press Ctrl+D to start recording; press Ctrl+F to stop.", flush=True)
     if puma_dataset:
         x_pos, x_rot, x_dot, delta_t, gripper_action = [], [], [], [], []
-        if recording_hotkeys is not None:
-            recording_hotkeys.reset_episode()
-            print("Move to the desired start pose, then press Ctrl+D to start recording; press Ctrl+F to stop.", flush=True)
-        else:
+        if recording_hotkeys is None:
             prev_t = time.time()
 
     # Loop until we get a reset from the input, a stop hotkey, or the task completes
@@ -309,7 +369,17 @@ def collect_human_trajectory(
         for gripper_ac in all_prev_gripper_actions[device.active_robot]:
             all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
 
-        env.step(env_action)
+        hotkey_recording = recording_hotkeys is None or recording_hotkeys.recording
+        if hotkey_recording and not recording_started:
+            _prime_data_collection_from_current_state(env)
+            recording_started = True
+
+        if hotkey_recording:
+            env.step(env_action)
+        else:
+            # Let the operator move to the desired start pose without logging HDF5 states/actions.
+            env.env.step(env_action)
+
         env.render()
         _show_aux_camera_window(
             env,
@@ -320,7 +390,6 @@ def collect_human_trajectory(
         )
 
         if puma_dataset:
-            hotkey_recording = recording_hotkeys is None or recording_hotkeys.recording
             if hotkey_recording:
                 # Record EE state after the step (achieved state)
                 now_t = time.time()
@@ -347,21 +416,24 @@ def collect_human_trajectory(
                 # print(f"{xr=}")
                 # print(f"{xd=}")
 
-            if recording_hotkeys is not None and recording_hotkeys.stop_requested:
-                break
-
-        # Also break if we complete the task
-        if task_completion_hold_count == 0:
+        if recording_hotkeys is not None and recording_hotkeys.stop_requested:
             break
 
-        # state machine to check for having a success for 10 consecutive timesteps
-        if env._check_success():
-            if task_completion_hold_count > 0:
-                task_completion_hold_count -= 1  # latched state, decrement count
+        if recording_started:
+            # Also break if we complete the task after recording has started.
+            if task_completion_hold_count == 0:
+                break
+
+            # state machine to check for having a success for 10 consecutive timesteps
+            if env._check_success():
+                if task_completion_hold_count > 0:
+                    task_completion_hold_count -= 1  # latched state, decrement count
+                else:
+                    task_completion_hold_count = 10  # reset count on first success timestep
             else:
-                task_completion_hold_count = 10  # reset count on first success timestep
+                task_completion_hold_count = -1  # null the counter if there's no success
         else:
-            task_completion_hold_count = -1  # null the counter if there's no success
+            task_completion_hold_count = -1
 
         # limit frame rate if necessary
         if max_fr is not None:
@@ -372,6 +444,7 @@ def collect_human_trajectory(
 
     # Do not call env.close() here: this function is invoked in a loop; closing would
     # destroy the MuJoCo sim and viewer and break the next episode (and ROS leader arms).
+    _flush_data_collection(env)
     if not puma_dataset:
         return None
     return {
@@ -1082,10 +1155,8 @@ if __name__ == "__main__":
 
     env_info = json.dumps(config)
 
-    recording_hotkeys = None
-    if args.puma_dataset:
-        recording_hotkeys = _RecordingHotkeys()
-        recording_hotkeys.start()
+    recording_hotkeys = _RecordingHotkeys()
+    recording_hotkeys.start()
 
     # collect demonstrations
     saved_idx = 0  # used for ee_state_{i}.pk in puma_dataset mode
