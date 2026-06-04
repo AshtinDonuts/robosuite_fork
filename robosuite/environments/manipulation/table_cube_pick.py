@@ -47,11 +47,11 @@ class TableCubePick(TableShelfPick):
         table_full_size=_DEFAULT_TABLE_FULL_SIZE,
         table_friction=_DEFAULT_TABLE_FRICTION,
         table_offset=_DEFAULT_TABLE_OFFSET,
-        marker_cube_table_offset=(-0.3, -0.03, 0.3),
+        marker_cube_table_offset=(-0.2, 0.2, 0.05),
         marker_cube_half_size=_SHELF_MARKER_CUBE_HALF_SIZE,
         milk_object_scale=0.8,
-        object_x_range=-0.20,
-        object_y_range=-0.05,
+        object_x_range=-0.20, # milk obj
+        object_y_range=-0.05, # milk obj
         z_rotation=0,
         lift_height_margin=0.08,
         visualize_keypoints=False,

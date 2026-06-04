@@ -24,6 +24,7 @@ import inspect
 import json
 import os
 import pickle
+import threading
 import time
 from glob import glob
 
@@ -90,6 +91,71 @@ def _device_input2action(device, goal_update_mode):
     return device.input2action()
 
 
+class _RecordingHotkeys:
+    """Tracks Ctrl+D / Ctrl+F episode recording hotkeys."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._ctrl_down = False
+        self._recording = False
+        self._stop_requested = False
+        self._listener = None
+
+    def start(self):
+        from pynput.keyboard import Key, Listener
+
+        self._key_cls = Key
+        self._listener = Listener(on_press=self._on_press, on_release=self._on_release)
+        self._listener.start()
+
+    def close(self):
+        if self._listener is not None:
+            self._listener.stop()
+            self._listener = None
+
+    def reset_episode(self):
+        with self._lock:
+            self._recording = False
+            self._stop_requested = False
+
+    @property
+    def recording(self):
+        with self._lock:
+            return self._recording
+
+    @property
+    def stop_requested(self):
+        with self._lock:
+            return self._stop_requested
+
+    def _on_press(self, key):
+        if key in (self._key_cls.ctrl, self._key_cls.ctrl_l, self._key_cls.ctrl_r):
+            with self._lock:
+                self._ctrl_down = True
+            return
+
+        char = getattr(key, "char", None)
+        if char is None:
+            return
+
+        char = char.lower()
+        with self._lock:
+            if self._ctrl_down or char in ("\x04", "\x06"):
+                if char in ("d", "\x04") and not self._recording:
+                    self._recording = True
+                    self._stop_requested = False
+                    print("Recording started (Ctrl+D).", flush=True)
+                elif char in ("f", "\x06") and self._recording:
+                    self._recording = False
+                    self._stop_requested = True
+                    print("Recording stopped (Ctrl+F).", flush=True)
+
+    def _on_release(self, key):
+        if key in (self._key_cls.ctrl, self._key_cls.ctrl_l, self._key_cls.ctrl_r):
+            with self._lock:
+                self._ctrl_down = False
+
+
 def _run_leaderarm_eef_anchor_delay_countdown(env, delay_sec: float) -> None:
     """
     Pause before `LeaderArm.start_control()` captures leader/follower anchor poses.
@@ -147,6 +213,7 @@ def collect_human_trajectory(
     aux_camera_width: int = 320,
     aux_camera_height: int = 240,
     aux_camera_window_name: str = "aux camera",
+    recording_hotkeys=None,
 ):
     """
     Use the device (keyboard or SpaceNav 3D mouse) to collect a demonstration.
@@ -198,9 +265,13 @@ def collect_human_trajectory(
     prev_t = None
     if puma_dataset:
         x_pos, x_rot, x_dot, delta_t, gripper_action = [], [], [], [], []
-        prev_t = time.time()
+        if recording_hotkeys is not None:
+            recording_hotkeys.reset_episode()
+            print("Move to the desired start pose, then press Ctrl+D to start recording; press Ctrl+F to stop.", flush=True)
+        else:
+            prev_t = time.time()
 
-    # Loop until we get a reset from the input or the task completes
+    # Loop until we get a reset from the input, a stop hotkey, or the task completes
     while True:
         start = time.time()
 
@@ -249,27 +320,35 @@ def collect_human_trajectory(
         )
 
         if puma_dataset:
-            # Record EE state after the step (achieved state)
-            now_t = time.time()
-            dt = now_t - prev_t
-            prev_t = now_t
+            hotkey_recording = recording_hotkeys is None or recording_hotkeys.recording
+            if hotkey_recording:
+                # Record EE state after the step (achieved state)
+                now_t = time.time()
+                if prev_t is None:
+                    dt = 0.0
+                else:
+                    dt = now_t - prev_t
+                prev_t = now_t
 
-            xp, xr, xd = _get_eef_state(env, robot_index=robot_index, arm=arm)
-            x_pos.append(xp)
-            x_rot.append(xr)
-            x_dot.append(xd)
-            delta_t.append(float(dt))
-            # Record the gripper command that was just sent (+1=close, -1=open).
-            # action_dict[f"{arm}_gripper"] is the latched position command maintained
-            # by all_prev_gripper_actions, so it reflects the true commanded state.
-            gripper_key = f"{arm}_gripper"
-            ga = action_dict.get(gripper_key, np.zeros(env.robots[robot_index].gripper[arm].dof))
-            gripper_action.append(np.asarray(ga, dtype=np.float64).copy())
+                xp, xr, xd = _get_eef_state(env, robot_index=robot_index, arm=arm)
+                x_pos.append(xp)
+                x_rot.append(xr)
+                x_dot.append(xd)
+                delta_t.append(float(dt))
+                # Record the gripper command that was just sent (+1=close, -1=open).
+                # action_dict[f"{arm}_gripper"] is the latched position command maintained
+                # by all_prev_gripper_actions, so it reflects the true commanded state.
+                gripper_key = f"{arm}_gripper"
+                ga = action_dict.get(gripper_key, np.zeros(env.robots[robot_index].gripper[arm].dof))
+                gripper_action.append(np.asarray(ga, dtype=np.float64).copy())
 
-            ## Debug
-            # print(f"{xp=}\n")
-            # print(f"{xr=}")
-            # print(f"{xd=}")
+                ## Debug
+                # print(f"{xp=}\n")
+                # print(f"{xr=}")
+                # print(f"{xd=}")
+
+            if recording_hotkeys is not None and recording_hotkeys.stop_requested:
+                break
 
         # Also break if we complete the task
         if task_completion_hold_count == 0:
@@ -1003,6 +1082,11 @@ if __name__ == "__main__":
 
     env_info = json.dumps(config)
 
+    recording_hotkeys = None
+    if args.puma_dataset:
+        recording_hotkeys = _RecordingHotkeys()
+        recording_hotkeys.start()
+
     # collect demonstrations
     saved_idx = 0  # used for ee_state_{i}.pk in puma_dataset mode
     try:
@@ -1024,6 +1108,7 @@ if __name__ == "__main__":
                 aux_camera_width=args.aux_camera_width,
                 aux_camera_height=args.aux_camera_height,
                 aux_camera_window_name=args.aux_camera_window or "aux camera",
+                recording_hotkeys=recording_hotkeys,
             )
 
             if args.puma_dataset:
@@ -1049,6 +1134,8 @@ if __name__ == "__main__":
                 cv2.destroyWindow(args.aux_camera_window)
             except Exception:
                 pass
+        if recording_hotkeys is not None:
+            recording_hotkeys.close()
         device_closer = getattr(device, "close", None)
         if device_closer is not None:
             device_closer()
