@@ -118,6 +118,22 @@ def _run_leaderarm_eef_anchor_delay_countdown(env, delay_sec: float) -> None:
     print("Capturing anchor pose now.", flush=True)
 
 
+def _show_aux_camera_window(env, camera_name, width, height, window_name):
+    """Render one offscreen camera into a separate OpenCV window."""
+    if camera_name is None:
+        return
+
+    try:
+        import cv2
+    except ImportError as exc:
+        raise ImportError("--aux-camera-window requires opencv-python / cv2 to be installed.") from exc
+
+    frame = env.sim.render(height=int(height), width=int(width), camera_name=camera_name)
+    frame = frame[::-1, :, ::-1]
+    cv2.imshow(window_name, frame)
+    cv2.waitKey(1)
+
+
 def collect_human_trajectory(
     env,
     device,
@@ -127,6 +143,10 @@ def collect_human_trajectory(
     robot_index: int = 0,
     puma_dataset: bool = False,
     leaderarm_eef_anchor_delay_sec: float = 0.0,
+    aux_camera_name: str = None,
+    aux_camera_width: int = 320,
+    aux_camera_height: int = 240,
+    aux_camera_window_name: str = "aux camera",
 ):
     """
     Use the device (keyboard or SpaceNav 3D mouse) to collect a demonstration.
@@ -147,6 +167,13 @@ def collect_human_trajectory(
 
     env.reset()
     env.render()
+    _show_aux_camera_window(
+        env,
+        aux_camera_name,
+        aux_camera_width,
+        aux_camera_height,
+        aux_camera_window_name,
+    )
 
     if leaderarm_eef_anchor_delay_sec > 0 and hasattr(device, "_leader_anchor_pose"):
         _run_leaderarm_eef_anchor_delay_countdown(env, leaderarm_eef_anchor_delay_sec)
@@ -213,6 +240,13 @@ def collect_human_trajectory(
 
         env.step(env_action)
         env.render()
+        _show_aux_camera_window(
+            env,
+            aux_camera_name,
+            aux_camera_width,
+            aux_camera_height,
+            aux_camera_window_name,
+        )
 
         if puma_dataset:
             # Record EE state after the step (achieved state)
@@ -408,6 +442,25 @@ if __name__ == "__main__":
         type=str,
         default="agentview",
         help="List of camera names to use for collecting demos. Pass multiple names to enable multiple views. Note: the `mujoco` renderer must be enabled when using multiple views; `mjviewer` is not supported.",
+    )
+    parser.add_argument(
+        "--aux-camera-window",
+        type=str,
+        default=None,
+        help="Optional camera name to show in a separate OpenCV window using offscreen rendering, "
+        "e.g. robot0_eye_in_hand. This can be used with --renderer mjviewer and --camera agentview.",
+    )
+    parser.add_argument(
+        "--aux-camera-width",
+        type=int,
+        default=320,
+        help="Width of the optional --aux-camera-window view.",
+    )
+    parser.add_argument(
+        "--aux-camera-height",
+        type=int,
+        default=240,
+        help="Height of the optional --aux-camera-window view.",
     )
     parser.add_argument(
         "--controller",
@@ -728,7 +781,7 @@ if __name__ == "__main__":
     _make_kwargs = dict(
         has_renderer=True,
         renderer=args.renderer,
-        has_offscreen_renderer=False,
+        has_offscreen_renderer=args.aux_camera_window is not None,
         render_camera=args.camera,
         ignore_done=True,
         use_camera_obs=False,
@@ -931,6 +984,10 @@ if __name__ == "__main__":
                     if args.device == "trossen_leaderarm_eef"
                     else 0.0
                 ),
+                aux_camera_name=args.aux_camera_window,
+                aux_camera_width=args.aux_camera_width,
+                aux_camera_height=args.aux_camera_height,
+                aux_camera_window_name=args.aux_camera_window or "aux camera",
             )
 
             if args.puma_dataset:
@@ -949,6 +1006,13 @@ if __name__ == "__main__":
             assert tmp_directory is not None
             gather_demonstrations_as_hdf5(tmp_directory, new_dir, env_info)
     finally:
+        if args.aux_camera_window is not None:
+            try:
+                import cv2
+
+                cv2.destroyWindow(args.aux_camera_window)
+            except Exception:
+                pass
         device_closer = getattr(device, "close", None)
         if device_closer is not None:
             device_closer()
