@@ -630,6 +630,28 @@ if __name__ == "__main__":
         "(q_sim = pivot + scale * (q_leader - pivot)). "
         "Set to the hardware home pose to expand motion relative to that configuration.",
     )
+    parser.add_argument(
+        "--leaderarm-joint-angle-scale",
+        type=float,
+        default=None,
+        metavar="MULT",
+        help="Scalar multiplier (MULT) for trossen_leaderarm / ros2_leaderarm: the same "
+        "MULT is broadcast to all arm joints, q_out[i] = MULT * q_in[i] (0 rad stays 0). "
+        "Example: MULT=2.0 maps 15 rad → 30 rad on every joint. Applied before "
+        "--leaderarm-teleop-scale-shoulder/elbow. Ignored if "
+        "--leaderarm-joint-angle-scale-joints is set.",
+    )
+    parser.add_argument(
+        "--leaderarm-joint-angle-scale-joints",
+        type=float,
+        nargs=6,
+        metavar=("waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"),
+        default=None,
+        help="Six per-joint multipliers (tuple order: waist, shoulder, elbow, "
+        "forearm_roll, wrist_angle, wrist_rotate): q_out[i] = scale[i] * q_in[i]. "
+        "Use when joints need different gains — e.g. '1 2 2 1 1 1' doubles only "
+        "shoulder and elbow. Overrides --leaderarm-joint-angle-scale.",
+    )
     # ── trossen_leaderarm_eef-specific arguments ──────────────────────────────
     parser.add_argument(
         "--leaderarm-eef-position-scale",
@@ -867,6 +889,10 @@ if __name__ == "__main__":
         )
         if args.leaderarm_teleop_scale_pivot is not None:
             _leaderarm_common_kw["leader_joint_scale_pivot"] = tuple(args.leaderarm_teleop_scale_pivot)
+        if args.leaderarm_joint_angle_scale_joints is not None:
+            _leaderarm_common_kw["leader_joint_angle_scale"] = tuple(args.leaderarm_joint_angle_scale_joints)
+        elif args.leaderarm_joint_angle_scale is not None:
+            _leaderarm_common_kw["leader_joint_angle_scale"] = args.leaderarm_joint_angle_scale
         if args.leaderarm_node_name is not None:
             _leaderarm_common_kw["node_name"] = args.leaderarm_node_name
 

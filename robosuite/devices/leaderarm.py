@@ -39,7 +39,7 @@ hardware ``left_finger`` position published on the JointState topic.
 
 import abc
 import threading
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 from pynput.keyboard import Key, Listener
@@ -85,6 +85,20 @@ class LeaderArm:
         leader_joint_scale_pivot (sequence of float, optional): Pivot for the
             affine map above (same length as ``leader_joint_scale``).  ``None``
             means all zeros (pure gain vs zero pose).
+        leader_joint_angle_scale (float or sequence of float, optional): Scales
+            each leader joint angle about zero before sim mapping:
+            ``q'[i] = scale[i] * q[i]`` (``0`` rad always stays ``0``).
+
+            * **Scalar** (``float``): one multiplier broadcast to every arm
+              joint — e.g. ``2.0`` turns ``15`` rad into ``30`` rad on all joints.
+            * **Tuple / sequence** (length = arm DOF, typically 6 for Trossen):
+              one multiplier per joint in controller order
+              (waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate).
+              E.g. ``(1.0, 2.0, 2.0, 1.0, 1.0, 1.0)`` doubles only shoulder
+              and elbow magnitude.
+
+            Applied before :attr:`leader_joint_scale` / pivot.  ``None`` disables
+            this step (equivalent to all ones).
     """
 
     def __init__(
@@ -94,6 +108,7 @@ class LeaderArm:
         joint_limits_safety_factor: float = 0.95,
         leader_joint_scale: Optional[Sequence[float]] = None,
         leader_joint_scale_pivot: Optional[Sequence[float]] = None,
+        leader_joint_angle_scale: Optional[Union[float, Sequence[float]]] = None,
     ):
         self.env = env
         self.joint_sensitivity = joint_sensitivity
@@ -103,6 +118,9 @@ class LeaderArm:
         )
         self._leader_joint_scale_pivot: Optional[np.ndarray] = (
             None if leader_joint_scale_pivot is None else np.asarray(leader_joint_scale_pivot, dtype=float)
+        )
+        self._leader_joint_angle_scale: Optional[np.ndarray] = (
+            None if leader_joint_angle_scale is None else np.asarray(leader_joint_angle_scale, dtype=float)
         )
 
         self._reset_state: int = 0
@@ -244,8 +262,9 @@ class LeaderArm:
                 * ``grasp``           – bool, True means gripper closed
                 * ``reset``           – int, 1 when a user reset was requested
         """
+        raw = np.asarray(self.get_leader_joint_positions(), dtype=float)
         return dict(
-            joint_positions=self.get_leader_joint_positions(),
+            joint_positions=self._scale_leader_joint_angles(raw),
             grasp=self.grasp,
             reset=self._reset_state,
         )
@@ -318,6 +337,39 @@ class LeaderArm:
     # Joint mapping / clamping
     # ------------------------------------------------------------------
 
+    def _scale_leader_joint_angles(self, leader_qpos: np.ndarray) -> np.ndarray:
+        """
+        Apply configured joint-angle scaling to raw leader positions (rad).
+
+        Order: angle magnitude (``leader_joint_angle_scale``), then affine
+        teleop map (``leader_joint_scale`` / ``leader_joint_scale_pivot``).
+        """
+        target = np.array(leader_qpos, dtype=float)
+        n = target.size
+
+        if self._leader_joint_angle_scale is not None:
+            angle_scale = self._leader_joint_angle_scale
+            if angle_scale.ndim == 0:
+                angle_scale = np.full(n, float(angle_scale), dtype=float)
+            elif angle_scale.shape != (n,):
+                raise ValueError(
+                    f"leader_joint_angle_scale must be a scalar or shape ({n},); "
+                    f"got {angle_scale.shape}"
+                )
+            target = angle_scale * target
+
+        if self._leader_joint_scale is not None or self._leader_joint_scale_pivot is not None:
+            scale = np.ones(n, dtype=float) if self._leader_joint_scale is None else self._leader_joint_scale
+            pivot = np.zeros(n, dtype=float) if self._leader_joint_scale_pivot is None else self._leader_joint_scale_pivot
+            if scale.shape != (n,) or pivot.shape != (n,):
+                raise ValueError(
+                    f"leader_joint_scale / pivot must have shape ({n},); "
+                    f"got scale {scale.shape}, pivot {pivot.shape}"
+                )
+            target = pivot + scale * (target - pivot)
+
+        return target
+
     def _map_leader_to_follower(
         self, leader_qpos: np.ndarray, robot, arm: str
     ) -> np.ndarray:
@@ -338,18 +390,7 @@ class LeaderArm:
             np.ndarray: Target joint positions for the follower, shape ``(n,)``.
         """
         controller = robot.part_controllers[arm]
-        target = np.array(leader_qpos, dtype=float)
-
-        if self._leader_joint_scale is not None or self._leader_joint_scale_pivot is not None:
-            n = target.size
-            scale = np.ones(n, dtype=float) if self._leader_joint_scale is None else self._leader_joint_scale
-            pivot = np.zeros(n, dtype=float) if self._leader_joint_scale_pivot is None else self._leader_joint_scale_pivot
-            if scale.shape != (n,) or pivot.shape != (n,):
-                raise ValueError(
-                    f"leader_joint_scale / pivot must have shape ({n},); "
-                    f"got scale {scale.shape}, pivot {pivot.shape}"
-                )
-            target = pivot + scale * (target - pivot)
+        target = self._scale_leader_joint_angles(leader_qpos)
 
         jnt_range = robot.sim.model.jnt_range[controller.joint_indexes["joints"]]
         lo = jnt_range[:, 0]
@@ -578,6 +619,10 @@ class TrossenArmLeaderArm(ROS2LeaderArm):
         topic (str): ROS 2 topic publishing ``sensor_msgs/msg/JointState``.
         gripper_close_threshold (float): ``left_finger`` position (rad) below
             which the gripper is treated as closed.  Defaults to ``0.0``.
+        leader_joint_angle_scale (float or sequence of float, optional): See
+            :class:`LeaderArm` — pass a **scalar** to scale every arm joint the
+            same way, or a **6-tuple** with one multiplier per joint
+            (waist … wrist_rotate).
         **kwargs: Forwarded verbatim to :class:`ROS2LeaderArm`.
 
     Example::
@@ -701,6 +746,28 @@ def main() -> None:
         "delta = per-step {arm}_delta (scaled by LeaderArm joint_sensitivity, default 1.0).",
     )
     parser.add_argument(
+        "--joint-angle-scale",
+        type=float,
+        default=None,
+        metavar="MULT",
+        help="Scalar multiplier applied uniformly to all 6 arm joints from JointState: "
+        "q_out[i] = MULT * q_in[i] for every i (0 rad stays 0). Example: MULT=2.0 "
+        "maps 15 rad → 30 rad on waist, shoulder, elbow, etc. Omit for no scaling (1.0). "
+        "Applied before --teleop-scale-shoulder/elbow and --teleop-scale-pivot. "
+        "Ignored if --joint-angle-scale-joints is set.",
+    )
+    parser.add_argument(
+        "--joint-angle-scale-joints",
+        type=float,
+        nargs=6,
+        metavar=("waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"),
+        default=None,
+        help="Six separate multipliers (one float per joint, same order as metvars): "
+        "q_out[i] = scale[i] * q_in[i]. Use this instead of --joint-angle-scale when "
+        "joints need different gains — e.g. '1 2 2 1 1 1' doubles shoulder and elbow "
+        "only (15 rad → 30 rad there, unchanged elsewhere). Overrides --joint-angle-scale.",
+    )
+    parser.add_argument(
         "--gripper-close-threshold",
         type=float,
         default=0.0,
@@ -801,6 +868,10 @@ def main() -> None:
     }
     if args.teleop_scale_pivot is not None:
         teleop_kw["leader_joint_scale_pivot"] = tuple(args.teleop_scale_pivot)
+    if args.joint_angle_scale_joints is not None:
+        teleop_kw["leader_joint_angle_scale"] = tuple(args.joint_angle_scale_joints)
+    elif args.joint_angle_scale is not None:
+        teleop_kw["leader_joint_angle_scale"] = args.joint_angle_scale
 
     if args.impl == "trossen":
         device: LeaderArm = TrossenArmLeaderArm(
@@ -831,9 +902,15 @@ def main() -> None:
 
     all_prev_gripper_actions = _prev_gripper_actions()
 
+    _angle_scale_msg = (
+        list(args.joint_angle_scale_joints)
+        if args.joint_angle_scale_joints is not None
+        else args.joint_angle_scale
+    )
     print(
         f"Listening on {args.topic!r} ({args.impl}); "
         f"arm_input_type={args.arm_input_type!r}; "
+        f"joint_angle_scale={_angle_scale_msg}; "
         f"teleop_scale shoulder={args.teleop_scale_shoulder} elbow={args.teleop_scale_elbow}; "
         f"render={'off' if args.no_render else args.renderer}; "
         f"prints every {args.period} s. Press q to reset pose. Ctrl+C to exit.\n"
