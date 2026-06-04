@@ -299,13 +299,13 @@ class TableShelfPick(ManipulationEnv):
         table_full_size=_DEFAULT_TABLE_FULL_SIZE,
         table_friction=_DEFAULT_TABLE_FRICTION,
         table_offset=_DEFAULT_TABLE_OFFSET,
-        shelf_type="4level",  # {3level, 4level}
+        shelf_type="3level",  # {3level, 4level}
         shelf_pos=(0.0, 0.25, 0.8), #@user
-        shelf_rotation=0,
+        shelf_rotation=-0.2,
         marker_cube_shelf_x=-0.2,
         marker_cube_shelf_y=-0.1,
         marker_cube_shelf_z=None,
-        shelf_scale=(1.5, 1.0, 0.5), #@USER change here.
+        shelf_scale=(1.5, 1.0, 0.4), #@USER change here.
         milk_object_scale=0.8,
         # object_-_range : Can pass single value or tuple
         object_x_range=-0.20, # Default: (-0.28, -0.08)

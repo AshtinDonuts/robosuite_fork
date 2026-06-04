@@ -552,7 +552,7 @@ if __name__ == "__main__":
         help="(x, y, z) offset for TableArena placement; z sets the tabletop height. "
         "Defaults to (0.03, 0.0, 1.0) for VX300S (matches arm reach), "
         "or (0.15, 0.0, 0.9) for other robots on Lift-style tasks. "
-        "Omitted for TableShelfPick so shelf/object layout matches demo_device_control.",
+        "Omitted for TableShelfPick / TableCubePick so shelf/cube/object layout matches demo_device_control.",
     )
     parser.add_argument(
         "--table-full-size",
@@ -562,7 +562,7 @@ if __name__ == "__main__":
         default=None,
         help="(x, y, z) dimensions of the table surface. "
         "Defaults to (0.5, 0.8, 0.05) for VX300S on Lift-style tasks. "
-        "Omitted for TableShelfPick so layout matches demo_device_control.",
+        "Omitted for TableShelfPick / TableCubePick so layout matches demo_device_control.",
     )
     parser.add_argument(
         "--leaderarm-topic",
@@ -738,12 +738,12 @@ if __name__ == "__main__":
     _is_vx300s = _primary_robot.upper() in ("VX300S",)
     _default_scale = 1.12 if _is_vx300s else 1.0
 
-    # demo_device_control does not override table/shelf/object layout for TableShelfPick;
+    # demo_device_control does not override table/shelf/cube/object layout for TableShelfPick / TableCubePick;
     # keep env defaults (table_offset, shelf_pos, object_x/y_range, etc.) unless the user
     # passes --table-offset / --table-full-size explicitly.
     _user_table_offset = args.table_offset
     _user_table_full_size = args.table_full_size
-    _use_env_builtin_table_layout = args.environment == "TableShelfPick"
+    _use_env_builtin_table_layout = args.environment in {"TableShelfPick", "TableCubePick"}
 
     # Table geometry defaults for Lift-style tasks: VX300S arm reach is best matched
     # with a higher table (z=1.0) and slight forward shift in x (leaderarm.py main()).
