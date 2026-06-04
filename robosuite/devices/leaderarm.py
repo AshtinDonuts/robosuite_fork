@@ -746,26 +746,26 @@ def main() -> None:
         "delta = per-step {arm}_delta (scaled by LeaderArm joint_sensitivity, default 1.0).",
     )
     parser.add_argument(
-        "--joint-angle-scale",
+        "--leaderarm-joint-angle-scale",
         type=float,
         default=None,
         metavar="MULT",
         help="Scalar multiplier applied uniformly to all 6 arm joints from JointState: "
         "q_out[i] = MULT * q_in[i] for every i (0 rad stays 0). Example: MULT=2.0 "
         "maps 15 rad → 30 rad on waist, shoulder, elbow, etc. Omit for no scaling (1.0). "
-        "Applied before --teleop-scale-shoulder/elbow and --teleop-scale-pivot. "
-        "Ignored if --joint-angle-scale-joints is set.",
+        "Applied before --leaderarm-teleop-scale-shoulder/elbow and --leaderarm-teleop-scale-pivot. "
+        "Ignored if --leaderarm-joint-angle-scale-joints is set.",
     )
     parser.add_argument(
-        "--joint-angle-scale-joints",
+        "--leaderarm-joint-angle-scale-joints",
         type=float,
         nargs=6,
         metavar=("waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"),
         default=None,
         help="Six separate multipliers (one float per joint, same order as metvars): "
-        "q_out[i] = scale[i] * q_in[i]. Use this instead of --joint-angle-scale when "
+        "q_out[i] = scale[i] * q_in[i]. Use this instead of --leaderarm-joint-angle-scale when "
         "joints need different gains — e.g. '1 2 2 1 1 1' doubles shoulder and elbow "
-        "only (15 rad → 30 rad there, unchanged elsewhere). Overrides --joint-angle-scale.",
+        "only (15 rad → 30 rad there, unchanged elsewhere). Overrides --leaderarm-joint-angle-scale.",
     )
     parser.add_argument(
         "--gripper-close-threshold",
@@ -780,20 +780,20 @@ def main() -> None:
         help="(ros2 only) Joint name for grasp; omit to use keyboard spacebar toggle for grasp.",
     )
     parser.add_argument(
-        "--teleop-scale-shoulder",
+        "--leaderarm-teleop-scale-shoulder",
         type=float,
         default=None,
         help="Gain on shoulder (arm joint index 1) before sim clamp: q_sim = pivot + scale*(q_leader-pivot). "
         "Default: 1.12 if --robot VX300S, else 1.0.",
     )
     parser.add_argument(
-        "--teleop-scale-elbow",
+        "--leaderarm-teleop-scale-elbow",
         type=float,
         default=None,
-        help="Gain on elbow (arm joint index 2). Default: same rule as --teleop-scale-shoulder.",
+        help="Gain on elbow (arm joint index 2). Default: same rule as --leaderarm-teleop-scale-shoulder.",
     )
     parser.add_argument(
-        "--teleop-scale-pivot",
+        "--leaderarm-teleop-scale-pivot",
         type=float,
         nargs=6,
         metavar=("w", "sh", "el", "fr", "wa", "wr"),
@@ -803,10 +803,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.teleop_scale_shoulder is None:
-        args.teleop_scale_shoulder = 1.12 if args.robot == "VX300S" else 1.0
-    if args.teleop_scale_elbow is None:
-        args.teleop_scale_elbow = 1.12 if args.robot == "VX300S" else 1.0
+    if args.leaderarm_teleop_scale_shoulder is None:
+        args.leaderarm_teleop_scale_shoulder = 1.12 if args.robot == "VX300S" else 1.0
+    if args.leaderarm_teleop_scale_elbow is None:
+        args.leaderarm_teleop_scale_elbow = 1.12 if args.robot == "VX300S" else 1.0
 
     import robosuite as suite
     from robosuite.controllers import load_part_controller_config
@@ -855,8 +855,8 @@ def main() -> None:
     teleop_scale = np.array(
         [
             1.0,
-            args.teleop_scale_shoulder,
-            args.teleop_scale_elbow,
+            args.leaderarm_teleop_scale_shoulder,
+            args.leaderarm_teleop_scale_elbow,
             1.0,
             1.0,
             1.0,
@@ -866,12 +866,12 @@ def main() -> None:
     teleop_kw: Dict = {
         "leader_joint_scale": teleop_scale,
     }
-    if args.teleop_scale_pivot is not None:
-        teleop_kw["leader_joint_scale_pivot"] = tuple(args.teleop_scale_pivot)
-    if args.joint_angle_scale_joints is not None:
-        teleop_kw["leader_joint_angle_scale"] = tuple(args.joint_angle_scale_joints)
-    elif args.joint_angle_scale is not None:
-        teleop_kw["leader_joint_angle_scale"] = args.joint_angle_scale
+    if args.leaderarm_teleop_scale_pivot is not None:
+        teleop_kw["leader_joint_scale_pivot"] = tuple(args.leaderarm_teleop_scale_pivot)
+    if args.leaderarm_joint_angle_scale_joints is not None:
+        teleop_kw["leader_joint_angle_scale"] = tuple(args.leaderarm_joint_angle_scale_joints)
+    elif args.leaderarm_joint_angle_scale is not None:
+        teleop_kw["leader_joint_angle_scale"] = args.leaderarm_joint_angle_scale
 
     if args.impl == "trossen":
         device: LeaderArm = TrossenArmLeaderArm(
@@ -903,15 +903,16 @@ def main() -> None:
     all_prev_gripper_actions = _prev_gripper_actions()
 
     _angle_scale_msg = (
-        list(args.joint_angle_scale_joints)
-        if args.joint_angle_scale_joints is not None
-        else args.joint_angle_scale
+        list(args.leaderarm_joint_angle_scale_joints)
+        if args.leaderarm_joint_angle_scale_joints is not None
+        else args.leaderarm_joint_angle_scale
     )
     print(
         f"Listening on {args.topic!r} ({args.impl}); "
         f"arm_input_type={args.arm_input_type!r}; "
-        f"joint_angle_scale={_angle_scale_msg}; "
-        f"teleop_scale shoulder={args.teleop_scale_shoulder} elbow={args.teleop_scale_elbow}; "
+        f"leaderarm_joint_angle_scale={_angle_scale_msg}; "
+        f"leaderarm_teleop_scale shoulder={args.leaderarm_teleop_scale_shoulder} "
+        f"elbow={args.leaderarm_teleop_scale_elbow}; "
         f"render={'off' if args.no_render else args.renderer}; "
         f"prints every {args.period} s. Press q to reset pose. Ctrl+C to exit.\n"
     )

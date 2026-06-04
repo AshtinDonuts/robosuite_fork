@@ -591,19 +591,19 @@ def main() -> None:
         help="Constant yaw offset (rad) added to target orientation in follower base frame",
     )
     parser.add_argument(
-        "--teleop-scale-shoulder",
+        "--leaderarm-teleop-scale-shoulder",
         type=float,
         default=None,
         help="Optional affine scale for the leader shoulder joint before FK. Default: 1.12 for VX300S, else 1.0.",
     )
     parser.add_argument(
-        "--teleop-scale-elbow",
+        "--leaderarm-teleop-scale-elbow",
         type=float,
         default=None,
         help="Optional affine scale for the leader elbow joint before FK. Default: 1.12 for VX300S, else 1.0.",
     )
     parser.add_argument(
-        "--teleop-scale-pivot",
+        "--leaderarm-teleop-scale-pivot",
         type=float,
         nargs=6,
         metavar=("w", "sh", "el", "fr", "wa", "wr"),
@@ -642,10 +642,10 @@ def main() -> None:
     from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
     from robosuite.wrappers import VisualizationWrapper
 
-    if args.teleop_scale_shoulder is None:
-        args.teleop_scale_shoulder = 1.12 if args.robot == "VX300S" else 1.0
-    if args.teleop_scale_elbow is None:
-        args.teleop_scale_elbow = 1.12 if args.robot == "VX300S" else 1.0
+    if args.leaderarm_teleop_scale_shoulder is None:
+        args.leaderarm_teleop_scale_shoulder = 1.12 if args.robot == "VX300S" else 1.0
+    if args.leaderarm_teleop_scale_elbow is None:
+        args.leaderarm_teleop_scale_elbow = 1.12 if args.robot == "VX300S" else 1.0
 
     arm_part_config = load_part_controller_config(default_controller="OSC_POSE")
     controller_config = refactor_composite_controller_config(
@@ -677,7 +677,10 @@ def main() -> None:
     if not args.no_render:
         env.render()
 
-    teleop_scale = np.array([1.0, args.teleop_scale_shoulder, args.teleop_scale_elbow, 1.0, 1.0, 1.0], dtype=float)
+    teleop_scale = np.array(
+        [1.0, args.leaderarm_teleop_scale_shoulder, args.leaderarm_teleop_scale_elbow, 1.0, 1.0, 1.0],
+        dtype=float,
+    )
     position_scale_xyz = np.array(
         [
             args.position_scale if args.position_scale_x is None else args.position_scale_x,
@@ -703,8 +706,8 @@ def main() -> None:
         leader_joint_scale=teleop_scale,
         gripper_close_threshold=args.gripper_close_threshold,
     )
-    if args.teleop_scale_pivot is not None:
-        teleop_kw["leader_joint_scale_pivot"] = tuple(args.teleop_scale_pivot)
+    if args.leaderarm_teleop_scale_pivot is not None:
+        teleop_kw["leader_joint_scale_pivot"] = tuple(args.leaderarm_teleop_scale_pivot)
     device = TrossenArmLeaderArm(**teleop_kw)
 
     anchor_delay_sec = 5

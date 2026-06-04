@@ -33,8 +33,8 @@ class VX300S(ManipulatorModel):
 
     Teleoperation: ``python -m robosuite.devices.leaderarm`` scales shoulder and
     elbow before the sim clamp (default gains 1.12 when ``--robot VX300S``).
-    Adjust with ``--teleop-scale-shoulder`` / ``--teleop-scale-elbow``, or use
-    ``--teleop-scale-pivot`` (6 angles in rad) to scale about a reference pose.
+    Adjust with ``--leaderarm-teleop-scale-shoulder`` / ``--leaderarm-teleop-scale-elbow``, or use
+    ``--leaderarm-teleop-scale-pivot`` (6 angles in rad) to scale about a reference pose.
 
     Args:
         idn (int or str): Robot instance id used for MJCF element prefixing.
