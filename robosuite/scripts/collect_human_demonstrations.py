@@ -233,9 +233,9 @@ def collect_human_trajectory(
             gripper_action.append(np.asarray(ga, dtype=np.float64).copy())
 
             ## Debug
-            print(f"{xp=}\n")
-            print(f"{xr=}")
-            print(f"{xd=}")
+            # print(f"{xp=}\n")
+            # print(f"{xr=}")
+            # print(f"{xd=}")
 
         # Also break if we complete the task
         if task_completion_hold_count == 0:
@@ -538,7 +538,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--leaderarm-gripper-close-threshold",
         type=float,
-        default=0.0,
+        default=0.01,
         help="Grasp closed when gripper joint position is below this (rad), if --leaderarm-gripper-joint is set.",
     )
     parser.add_argument(

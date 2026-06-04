@@ -62,6 +62,10 @@ _MARKER_CUBE_KEYPOINT_SITE_PREFIX = "marker_cube_keypoint"
 _OBJECT_KEYPOINT_RGBA = (0.0, 0.35, 1.0, 1.0)
 _MARKER_CUBE_KEYPOINT_RGBA = (0.0, 1.0, 0.15, 1.0)
 _KEYPOINT_SITE_SIZE = 0.01
+_WRIST_CAMERA_NAME = "eye_in_hand"
+_WRIST_CAMERA_POS = (0.05, 0.0, 0.0)
+_WRIST_CAMERA_QUAT = (0.0, 0.707108, 0.707108, 0.0)
+_WRIST_CAMERA_FOVY = 75
 
 
 def _array_to_mjcf_string(array):
@@ -296,15 +300,15 @@ class TableShelfPick(ManipulationEnv):
         table_friction=_DEFAULT_TABLE_FRICTION,
         table_offset=_DEFAULT_TABLE_OFFSET,
         shelf_type="4level",  # {3level, 4level}
-        shelf_pos=(0.0, 0.3, 0.8), #@user
+        shelf_pos=(0.0, 0.25, 0.8), #@user
         shelf_rotation=0,
         marker_cube_shelf_x=-0.2,
         marker_cube_shelf_y=-0.1,
         marker_cube_shelf_z=None,
-        shelf_scale=(1.3, 1.0, 0.7), #@USER change here.
-        milk_object_scale=1.0,
+        shelf_scale=(1.5, 1.0, 0.5), #@USER change here.
+        milk_object_scale=0.8,
         # object_-_range : Can pass single value or tuple
-        object_x_range=-0.10, # Default: (-0.28, -0.08)
+        object_x_range=-0.20, # Default: (-0.28, -0.08)
         object_y_range=-0.05, # Default: (-0.30, -0.18)
         z_rotation=0, # None for random
         lift_height_margin=0.08,
@@ -328,7 +332,7 @@ class TableShelfPick(ManipulationEnv):
         horizon=1000,
         ignore_done=False,
         hard_reset=True,
-        camera_names="agentview",
+        camera_names=("agentview", "all-eye_in_hand"),
         camera_heights=256,
         camera_widths=256,
         camera_depths=False,
@@ -445,8 +449,11 @@ class TableShelfPick(ManipulationEnv):
 
         xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
         xpos = list(xpos)
-        xpos[2] -= 0.2 # @USER
+        xpos[2] -= 0.15 # @USER
+        xpos[0] += 0.05
         self.robots[0].robot_model.set_base_xpos(xpos)
+        for robot in self.robots:
+            self._add_wrist_cameras_to_robot_model(robot.robot_model)
 
         mujoco_arena = TableArena(
             table_full_size=self.table_full_size,
@@ -510,6 +517,43 @@ class TableShelfPick(ManipulationEnv):
             mujoco_robots=[robot.robot_model for robot in self.robots],
             mujoco_objects=[self.shelf, self.object],
         )
+
+    def _add_wrist_cameras_to_robot_model(self, robot_model):
+        """
+        Adds a task-local wrist camera to robots that do not already expose an EEF camera.
+        """
+        arms = list(getattr(robot_model, "arms", []))
+        if not arms:
+            return
+
+        for arm in arms:
+            has_arm_wrist_camera = any(
+                _WRIST_CAMERA_NAME in camera_name and (len(arms) == 1 or arm in camera_name)
+                for camera_name in robot_model.cameras
+            )
+            if has_arm_wrist_camera:
+                continue
+
+            eef_body_name = robot_model.eef_name[arm]
+            eef_body = robot_model.root.find(f".//body[@name='{eef_body_name}']")
+            if eef_body is None:
+                raise ValueError(f"Could not find EEF body {eef_body_name!r} to attach wrist camera")
+
+            camera_suffix = _WRIST_CAMERA_NAME if len(arms) == 1 else f"{arm}_{_WRIST_CAMERA_NAME}"
+            eef_body.append(
+                ET.Element(
+                    "camera",
+                    attrib={
+                        "mode": "fixed",
+                        "name": robot_model.naming_prefix + camera_suffix,
+                        "pos": _array_to_mjcf_string(_WRIST_CAMERA_POS),
+                        "quat": _array_to_mjcf_string(_WRIST_CAMERA_QUAT),
+                        "fovy": str(_WRIST_CAMERA_FOVY),
+                    },
+                )
+            )
+
+        robot_model.cameras = robot_model.get_element_names(robot_model.worldbody, "camera")
 
     def _setup_references(self):
         super()._setup_references()
