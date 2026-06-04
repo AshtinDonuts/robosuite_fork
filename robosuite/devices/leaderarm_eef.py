@@ -527,7 +527,7 @@ class TrossenArmLeaderArm(ROS2LeaderArm):
             env,
             topic=topic,
             joint_names=list(self.DEFAULT_JOINT_NAMES),
-            gripper_joint="left_finger",
+            gripper_joint="gripper",
             gripper_close_threshold=gripper_close_threshold,
             **kwargs,
         )

@@ -18,7 +18,7 @@ Concrete implementation for Trossen Robotics hardware (via ROS 2)::
         env.step(robot.create_action_vector(ac_dict))
     device.close()
 
-Trossen arm qpos layout (matches TrossenAIStationaryTask.before_step in sim_env.py)::
+Trossen ``/leader_solo/joint_states`` layout::
 
     Index  Joint name        Notes
     ─────────────────────────────────────────────────────
@@ -28,13 +28,14 @@ Trossen arm qpos layout (matches TrossenAIStationaryTask.before_step in sim_env.
     3      forearm_roll
     4      wrist_angle
     5      wrist_rotate
-    6      right_carriage    coupled (not actuated)
-    7      left_carriage     actuated ← mapped from hardware left_finger
+    6      gripper           raw gripper actuator position
+    7      left_finger       mirrored finger state
+    8      right_finger      mirrored finger state
     ─────────────────────────────────────────────────────
 
 The 6 arm joints (indices 0–5) are forwarded directly to the JOINT_POSITION
-controller.  The gripper (index 7, ``left_carriage_joint``) is inferred from the
-hardware ``left_finger`` position published on the JointState topic.
+controller.  The gripper open/close state is inferred from the hardware
+``gripper`` actuator position published on the JointState topic.
 """
 
 import abc
@@ -524,7 +525,7 @@ class ROS2LeaderArm(LeaderArm):
             self._positions.update(incoming)
 
             # Derive grasp state from hardware when a gripper joint is given.
-            if self._gripper_joint is not None:
+            if self._gripper_joint is not None and self.grasp_states:
                 gripper_pos = self._positions.get(self._gripper_joint)
                 if gripper_pos is not None:
                     closed = gripper_pos < self._gripper_close_threshold
@@ -601,23 +602,25 @@ class TrossenArmLeaderArm(ROS2LeaderArm):
         forearm_roll          3           3         arm joint
         wrist_angle           4           4         arm joint
         wrist_rotate          5           5         arm joint
-        gripper               6           –         raw motor encoder (unused)
-        left_finger           7           7         left_carriage_joint (actuated)
-        right_finger          8           6         right_carriage_joint (coupled)
+        gripper               6           –         raw gripper actuator state
+        left_finger           7           –         mirrored finger state
+        right_finger          8           –         mirrored finger state
         ──────────────────────────────────────────────────────────
 
     :meth:`get_leader_joint_positions` returns **only the 6 arm joints**
     (waist → wrist_rotate), matching the DOF expected by the
     ``JOINT_POSITION`` controller on the follower.
 
-    Grasp state is derived from ``left_finger`` — the actuated carriage joint
-    in both hardware and simulation.  The gripper is treated as **closed**
-    whenever ``left_finger < gripper_close_threshold``.
+    Grasp state is derived from the ROS ``gripper`` actuator position.  The
+    ``left_finger`` / ``right_finger`` entries are mirrored finger states and
+    can sit near zero, so they are not reliable open/close signals.  The
+    gripper is treated as **closed** whenever
+    ``gripper < gripper_close_threshold``.
 
     Args:
         env: The robosuite environment containing the follower robot(s).
         topic (str): ROS 2 topic publishing ``sensor_msgs/msg/JointState``.
-        gripper_close_threshold (float): ``left_finger`` position (rad) below
+        gripper_close_threshold (float): ``gripper`` position (rad) below
             which the gripper is treated as closed.  Defaults to ``0.0``.
         leader_joint_angle_scale (float or sequence of float, optional): See
             :class:`LeaderArm` — pass a **scalar** to scale every arm joint the
@@ -665,8 +668,9 @@ class TrossenArmLeaderArm(ROS2LeaderArm):
             topic=topic,
             # Fix arm joint names; finger joints are outside the controller DOF.
             joint_names=list(self.DEFAULT_JOINT_NAMES),
-            # left_finger is the actuated carriage joint (sim qpos index 7).
-            gripper_joint="left_finger",
+            # Hardware JointState publishes the real gripper actuator as "gripper";
+            # finger entries are mirrored and may hover around zero.
+            gripper_joint="gripper",
             gripper_close_threshold=gripper_close_threshold,
             **kwargs,
         )
@@ -699,7 +703,7 @@ def main() -> None:
         "--impl",
         choices=("trossen", "ros2"),
         default="trossen",
-        help="trossen: TrossenArmLeaderArm (left_finger → grasp). "
+        help="trossen: TrossenArmLeaderArm (gripper → grasp). "
         "ros2: generic ROS2LeaderArm; use --gripper-joint for hardware grasp.",
     )
     parser.add_argument("--topic", type=str, default="/joint_states", help="sensor_msgs/JointState topic")
@@ -748,7 +752,7 @@ def main() -> None:
     parser.add_argument(
         "--leaderarm-joint-angle-scale",
         type=float,
-        default=None,
+        default=1.2,
         metavar="MULT",
         help="Scalar multiplier applied uniformly to all 6 arm joints from JointState: "
         "q_out[i] = MULT * q_in[i] for every i (0 rad stays 0). Example: MULT=2.0 "
@@ -770,8 +774,8 @@ def main() -> None:
     parser.add_argument(
         "--gripper-close-threshold",
         type=float,
-        default=0.15,
-        help="Joint position below this (rad) counts as closed (trossen: left_finger; ros2: if --gripper-joint set).",
+        default=0.10,
+        help="Joint position below this (rad) counts as closed (trossen: gripper; ros2: if --gripper-joint set).",
     )
     parser.add_argument(
         "--gripper-joint",
