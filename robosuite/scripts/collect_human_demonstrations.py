@@ -10,6 +10,7 @@ This script records trajectories in the same pickle format as
         "x_dot":         [np.ndarray shape (6,), ...],        # [linear_vel(3), angular_vel(3)] in world frame
         "x_stiffness":   [np.ndarray shape (6, 6), ...],      # Cartesian stiffness matrix, diag [xyz, rpy]
         "x_damping":     [np.ndarray shape (6, 6), ...],      # Cartesian damping matrix, diag [xyz, rpy]
+        "initial_state": np.ndarray shape (N,), optional      # MuJoCo state at recording start
         "delta_t":       np.ndarray shape (T,),               # wall-clock dt between samples (s)
         "gripper_action": [np.ndarray shape (dof,), ...],     # per-step gripper command (+1=close, -1=open)
     }
@@ -113,6 +114,10 @@ def _get_cartesian_impedance(env, robot_index: int, arm: str):
     if kp.size < 6 or kd.size < 6:
         return nan_matrix.copy(), nan_matrix.copy()
     return np.diag(kp[:6]).astype(np.float64, copy=False), np.diag(kd[:6]).astype(np.float64, copy=False)
+
+
+def _recording_sim(env):
+    return env.env.sim if hasattr(env, "env") else env.sim
 
 
 def _device_input2action(device, goal_update_mode):
@@ -361,6 +366,7 @@ def collect_human_trajectory(
         None,
     )
     prev_t = None
+    initial_state = None
     warned_missing_cartesian_impedance = False
     recording_started = recording_hotkeys is None
     if recording_hotkeys is not None:
@@ -369,6 +375,7 @@ def collect_human_trajectory(
     if puma_dataset:
         x_pos, x_rot, x_dot, x_stiffness, x_damping, delta_t, gripper_action = [], [], [], [], [], [], []
         if recording_hotkeys is None:
+            initial_state = np.array(_recording_sim(env).get_state().flatten(), dtype=np.float64)
             prev_t = time.time()
 
     # Loop until we get a reset from the input, a stop hotkey, or the task completes
@@ -411,6 +418,8 @@ def collect_human_trajectory(
 
         hotkey_recording = recording_hotkeys is None or recording_hotkeys.recording
         if hotkey_recording and not recording_started:
+            if puma_dataset:
+                initial_state = np.array(_recording_sim(env).get_state().flatten(), dtype=np.float64)
             _prime_data_collection_from_current_state(env)
             recording_started = True
 
@@ -503,6 +512,7 @@ def collect_human_trajectory(
         "x_dot": x_dot,
         "x_stiffness": x_stiffness,
         "x_damping": x_damping,
+        "initial_state": initial_state,
         "delta_t": np.asarray(delta_t, dtype=np.float64),
         "gripper_action": gripper_action,  # list of np.ndarray (dof,) per timestep
     }
@@ -538,6 +548,7 @@ def _dataset_recording_metadata(puma_dataset: bool) -> dict:
                 "x_dot": "End-effector grip-site twist [linear_vel(3), angular_vel(3)], shape (6,).",
                 "x_stiffness": "Cartesian task-space stiffness matrix diag [x, y, z, rx, ry, rz], shape (6, 6).",
                 "x_damping": "Cartesian task-space damping matrix diag [x, y, z, rx, ry, rz], shape (6, 6).",
+                "initial_state": "Optional flattened MuJoCo simulator state captured when recording starts.",
                 "delta_t": "Wall-clock duration between recorded samples, shape (T,).",
                 "gripper_action": "Per-step gripper command sent during collection.",
             },
