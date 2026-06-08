@@ -8,6 +8,8 @@ This script records trajectories in the same pickle format as
         "x_pos":         [np.ndarray shape (3,), ...],        # world-frame EE position (m)
         "x_rot":         [np.ndarray shape (3, 3), ...],      # world-frame EE rotation matrix
         "x_dot":         [np.ndarray shape (6,), ...],        # [linear_vel(3), angular_vel(3)] in world frame
+        "x_stiffness":   [np.ndarray shape (6, 6), ...],      # Cartesian stiffness matrix, diag [xyz, rpy]
+        "x_damping":     [np.ndarray shape (6, 6), ...],      # Cartesian damping matrix, diag [xyz, rpy]
         "delta_t":       np.ndarray shape (T,),               # wall-clock dt between samples (s)
         "gripper_action": [np.ndarray shape (dof,), ...],     # per-step gripper command (+1=close, -1=open)
     }
@@ -82,6 +84,35 @@ def _get_eef_state(env, robot_index: int, arm: str):
     x_vel_ang = np.asarray(env.sim.data.get_site_xvelr(site_name), dtype=np.float64)
     x_dot = np.concatenate([x_vel_lin, x_vel_ang]).astype(np.float64, copy=False)
     return x_pos, x_rot, x_dot
+
+
+def _get_cartesian_impedance(env, robot_index: int, arm: str):
+    """
+    Returns Cartesian stiffness / damping matrices for OSC-controlled arms.
+
+    robosuite OSC stores diagonal task-space gains as kp / kd vectors ordered
+    [x, y, z, rx, ry, rz]. Non-OSC controllers do not expose Cartesian task-space
+    impedance, so return NaN matrices to keep the puma_dataset schema stable.
+    """
+    nan_matrix = np.full((6, 6), np.nan, dtype=np.float64)
+    try:
+        controller = env.robots[robot_index].part_controllers[arm]
+    except Exception:
+        return nan_matrix.copy(), nan_matrix.copy()
+
+    controller_name = str(getattr(controller, "name", ""))
+    if controller.__class__.__name__ != "OperationalSpaceController" and not controller_name.startswith("OSC_"):
+        return nan_matrix.copy(), nan_matrix.copy()
+
+    try:
+        kp = np.asarray(controller.kp, dtype=np.float64).reshape(-1)
+        kd = np.asarray(controller.kd, dtype=np.float64).reshape(-1)
+    except Exception:
+        return nan_matrix.copy(), nan_matrix.copy()
+
+    if kp.size < 6 or kd.size < 6:
+        return nan_matrix.copy(), nan_matrix.copy()
+    return np.diag(kp[:6]).astype(np.float64, copy=False), np.diag(kd[:6]).astype(np.float64, copy=False)
 
 
 def _device_input2action(device, goal_update_mode):
@@ -320,14 +351,23 @@ def collect_human_trajectory(
         for robot in env.robots
     ]
 
-    x_pos, x_rot, x_dot, delta_t, gripper_action = None, None, None, None, None
+    x_pos, x_rot, x_dot, x_stiffness, x_damping, delta_t, gripper_action = (
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
     prev_t = None
+    warned_missing_cartesian_impedance = False
     recording_started = recording_hotkeys is None
     if recording_hotkeys is not None:
         recording_hotkeys.reset_episode()
         print("Move to the desired start pose, then press Ctrl+D to start recording; press Ctrl+F to stop.", flush=True)
     if puma_dataset:
-        x_pos, x_rot, x_dot, delta_t, gripper_action = [], [], [], [], []
+        x_pos, x_rot, x_dot, x_stiffness, x_damping, delta_t, gripper_action = [], [], [], [], [], [], []
         if recording_hotkeys is None:
             prev_t = time.time()
 
@@ -400,9 +440,19 @@ def collect_human_trajectory(
                 prev_t = now_t
 
                 xp, xr, xd = _get_eef_state(env, robot_index=robot_index, arm=arm)
+                xs, xdamp = _get_cartesian_impedance(env, robot_index=robot_index, arm=arm)
+                if np.isnan(xs).all() and not warned_missing_cartesian_impedance:
+                    print(
+                        "Warning: Cartesian stiffness/damping unavailable for this controller; "
+                        "recording NaN matrices in x_stiffness / x_damping.",
+                        flush=True,
+                    )
+                    warned_missing_cartesian_impedance = True
                 x_pos.append(xp)
                 x_rot.append(xr)
                 x_dot.append(xd)
+                x_stiffness.append(xs)
+                x_damping.append(xdamp)
                 delta_t.append(float(dt))
                 # Record the gripper command that was just sent (+1=close, -1=open).
                 # action_dict[f"{arm}_gripper"] is the latched position command maintained
@@ -451,6 +501,8 @@ def collect_human_trajectory(
         "x_pos": x_pos,
         "x_rot": x_rot,
         "x_dot": x_dot,
+        "x_stiffness": x_stiffness,
+        "x_damping": x_damping,
         "delta_t": np.asarray(delta_t, dtype=np.float64),
         "gripper_action": gripper_action,  # list of np.ndarray (dof,) per timestep
     }
@@ -613,6 +665,11 @@ if __name__ == "__main__":
         type=int,
         default=240,
         help="Height of the optional --aux-camera-window view.",
+    )
+    parser.add_argument(
+        "--visualize-keypoints",
+        action="store_true",
+        help="Show keypoint marker sites for environments that expose visualize_keypoints.",
     )
     parser.add_argument(
         "--controller",
@@ -966,6 +1023,8 @@ if __name__ == "__main__":
         reward_shaping=True,
         control_freq=20,
     )
+    if args.visualize_keypoints:
+        _make_kwargs["visualize_keypoints"] = True
     if _user_table_offset is not None:
         _make_kwargs["table_offset"] = tuple(_user_table_offset)
     if _user_table_full_size is not None:
