@@ -518,10 +518,79 @@ def collect_human_trajectory(
     }
 
 
+def _next_available_path(directory: str, filename: str) -> str:
+    """Return a non-existing path, preserving filename when it is still free."""
+    base, ext = os.path.splitext(filename)
+    path = os.path.join(directory, filename)
+    if not os.path.exists(path):
+        return path
+
+    suffix = 1
+    while True:
+        path = os.path.join(directory, f"{base}_{suffix}{ext}")
+        if not os.path.exists(path):
+            return path
+        suffix += 1
+
+
+def _next_available_episode_index(directory: str, start: int = 0) -> int:
+    """Return the first ee_state_N.pk index that will not overwrite a prior recording."""
+    idx = start
+    while os.path.exists(os.path.join(directory, f"ee_state_{idx}.pk")):
+        idx += 1
+    return idx
+
+
 def _save_ee_state_pickle(traj: dict, out_path: str):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "wb") as f:
+    with open(out_path, "xb") as f:
         pickle.dump(traj, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _write_or_validate_env_info(directory: str, config: dict) -> str:
+    """Create env_info.json once, then require later recordings to match it."""
+    env_info_path = os.path.join(directory, "env_info.json")
+    if not os.path.exists(env_info_path):
+        with open(env_info_path, "x") as f:
+            json.dump(config, f, indent=2, sort_keys=True)
+        return env_info_path
+
+    with open(env_info_path, "r") as f:
+        existing_config = json.load(f)
+
+    if existing_config != config:
+        raise ValueError(
+            "Existing env_info.json does not match the current recording configuration. "
+            f"Refusing to add episodes to {directory!r}; use a different --eps_name or "
+            "record with the same env/controller/robot settings."
+        )
+    return env_info_path
+
+
+def _hdf5_demo_sort_key(name: str):
+    prefix = "demo_"
+    if name.startswith(prefix):
+        try:
+            return int(name[len(prefix) :])
+        except ValueError:
+            pass
+    return name
+
+
+def _hdf5_demo_names(hdf5_path: str) -> list:
+    if not os.path.exists(hdf5_path):
+        return []
+    with h5py.File(hdf5_path, "r") as f:
+        if "data" not in f:
+            return []
+        return sorted(
+            [
+                name
+                for name in f["data"].keys()
+                if name.startswith("demo_") and isinstance(f["data"][name], h5py.Group)
+            ],
+            key=_hdf5_demo_sort_key,
+        )
 
 
 def _dataset_recording_metadata(puma_dataset: bool) -> dict:
@@ -560,7 +629,7 @@ def _dataset_recording_metadata(puma_dataset: bool) -> dict:
     return metadata
 
 
-def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
+def gather_demonstrations_as_hdf5(directory, out_dir, env_info, hdf5_path=None, preserve_hdf5_demo_names=None):
     """
     Gathers the demonstrations saved in @directory into a single hdf5 file.
 
@@ -579,8 +648,12 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
             actions (dataset) - actions applied during demonstration
     """
 
-    hdf5_path = os.path.join(out_dir, "demo.hdf5")
-    f = h5py.File(hdf5_path, "w")
+    if hdf5_path is None:
+        hdf5_path = os.path.join(out_dir, "demo.hdf5")
+    if preserve_hdf5_demo_names is None:
+        preserve_hdf5_demo_names = _hdf5_demo_names(hdf5_path)
+    tmp_hdf5_path = _next_available_path(out_dir, ".demo.hdf5.tmp")
+    f = h5py.File(tmp_hdf5_path, "w")
 
     # store some metadata in the attributes of one group
     grp = f.create_group("data")
@@ -588,7 +661,17 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
     num_eps = 0
     env_name = None  # will get populated at some point
 
-    for ep_directory in os.listdir(directory):
+    if os.path.exists(hdf5_path) and preserve_hdf5_demo_names:
+        with h5py.File(hdf5_path, "r") as src:
+            src_data = src["data"]
+            env_name = _hdf5_attr_str(src_data.attrs.get("env", env_name))
+            for demo_name in preserve_hdf5_demo_names:
+                if demo_name not in src_data:
+                    continue
+                num_eps += 1
+                src_data.copy(demo_name, grp, name="demo_{}".format(num_eps))
+
+    for ep_directory in sorted(os.listdir(directory)):
         state_paths = os.path.join(directory, ep_directory, "state_*.npz")
         states = []
         actions = []
@@ -639,6 +722,7 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
     grp.attrs["env_info"] = _hdf5_attr_str(env_info)
 
     f.close()
+    os.replace(tmp_hdf5_path, hdf5_path)
 
 
 if __name__ == "__main__":
@@ -1083,7 +1167,8 @@ if __name__ == "__main__":
         _make_kwargs["table_offset"] = tuple(_user_table_offset)
     if _user_table_full_size is not None:
         _make_kwargs["table_full_size"] = tuple(_user_table_full_size)
-    env = suite.make(**config, **_make_kwargs)
+    # recorded_files is env_info metadata only, not an env constructor kwarg.
+    env = suite.make(**{k: v for k, v in config.items() if k != "recorded_files"}, **_make_kwargs)
     if args.deterministic_reset:
         env.deterministic_reset = True
     # Optional: force a fixed dirt layout (Wipe only) for cross-run reproducibility.
@@ -1256,15 +1341,15 @@ if __name__ == "__main__":
                     body_id = env.unwrapped.sim.model.body_name2id(marker.root_body)
                     pos = env.unwrapped.sim.model.body_pos[body_id]
                     xy.append([float(pos[0]), float(pos[1])])
-                with open(os.path.join(new_dir, "dirt_layout.json"), "w") as f:
+                dirt_layout_path = _next_available_path(new_dir, "dirt_layout.json")
+                with open(dirt_layout_path, "x") as f:
                     json.dump({"xy": xy}, f, indent=2)
         except Exception:
             # Best-effort: ignore if environment doesn't expose wipe markers.
             pass
 
-    # Save a small metadata file (keeps parity with previous behavior)
-    with open(os.path.join(new_dir, "env_info.json"), "w") as f:
-        json.dump(config, f, indent=2, sort_keys=True)
+    # Keep a single canonical metadata file per episode folder.
+    _write_or_validate_env_info(new_dir, config)
 
     env_info = json.dumps(config)
 
@@ -1272,7 +1357,15 @@ if __name__ == "__main__":
     recording_hotkeys.start()
 
     # collect demonstrations
-    saved_idx = 0  # used for ee_state_{i}.pk in puma_dataset mode
+    saved_idx = _next_available_episode_index(new_dir)  # used for ee_state_{i}.pk in puma_dataset mode
+    hdf5_path = os.path.join(new_dir, "demo.hdf5")
+    preserved_hdf5_demo_names = _hdf5_demo_names(hdf5_path)
+    if args.puma_dataset:
+        print(f"New puma_dataset recordings will start at ee_state_{saved_idx}.pk")
+    print(
+        f"Robosuite HDF5 consolidation will use canonical file: {hdf5_path} "
+        f"(preserving {len(preserved_hdf5_demo_names)} existing demos)"
+    )
     try:
         while True:
             traj = collect_human_trajectory(
@@ -1302,6 +1395,7 @@ if __name__ == "__main__":
                     print("Demonstration unsuccessful; not saved (use --save-only-successful off to save all).")
                     continue
 
+                saved_idx = _next_available_episode_index(new_dir, saved_idx)
                 out_path = os.path.join(new_dir, f"ee_state_{saved_idx}.pk")
                 _save_ee_state_pickle(traj, out_path)
                 print(f"Saved: {out_path}  (T={len(traj['delta_t'])}, success={success})")
@@ -1309,7 +1403,13 @@ if __name__ == "__main__":
 
             # Original robosuite pipeline: consolidate the raw npz dumps into demo.hdf5
             assert tmp_directory is not None
-            gather_demonstrations_as_hdf5(tmp_directory, new_dir, env_info)
+            gather_demonstrations_as_hdf5(
+                tmp_directory,
+                new_dir,
+                env_info,
+                hdf5_path=hdf5_path,
+                preserve_hdf5_demo_names=preserved_hdf5_demo_names,
+            )
     finally:
         if args.aux_camera_window is not None:
             try:
