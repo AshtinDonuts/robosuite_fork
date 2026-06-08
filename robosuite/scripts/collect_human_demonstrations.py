@@ -514,6 +514,41 @@ def _save_ee_state_pickle(traj: dict, out_path: str):
         pickle.dump(traj, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
+def _dataset_recording_metadata(puma_dataset: bool) -> dict:
+    metadata = {
+        "demo.hdf5": {
+            "format": "robosuite_hdf5",
+            "description": "Raw robosuite demonstrations consolidated from DataCollectionWrapper state_*.npz files.",
+            "contains": {
+                "states": "Flattened MuJoCo simulator states after each action.",
+                "actions": "Environment action vectors interpreted by the collection controller_configs.",
+                "model_file": "MJCF XML string for the recorded task instance.",
+            },
+            "controller_semantics": "Actions match the collection controller_configs stored in env_info.json.",
+        }
+    }
+    if puma_dataset:
+        metadata["ee_state_*.pk"] = {
+            "format": "puma_dataset_pickle",
+            "description": "Achieved end-effector trajectory sampled from MuJoCo after each recorded step.",
+            "frame": "MuJoCo world frame",
+            "contains": {
+                "x_pos": "End-effector grip-site position, shape (3,), metres.",
+                "x_rot": "End-effector grip-site rotation matrix, shape (3, 3).",
+                "x_dot": "End-effector grip-site twist [linear_vel(3), angular_vel(3)], shape (6,).",
+                "x_stiffness": "Cartesian task-space stiffness matrix diag [x, y, z, rx, ry, rz], shape (6, 6).",
+                "x_damping": "Cartesian task-space damping matrix diag [x, y, z, rx, ry, rz], shape (6, 6).",
+                "delta_t": "Wall-clock duration between recorded samples, shape (T,).",
+                "gripper_action": "Per-step gripper command sent during collection.",
+            },
+            "controller_semantics": (
+                "This file records achieved Cartesian EE state, not the teleop command. "
+                "Replay should use a Cartesian pose controller such as OSC_POSE."
+            ),
+        }
+    return metadata
+
+
 def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
     """
     Gathers the demonstrations saved in @directory into a single hdf5 file.
@@ -596,6 +631,13 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
 
 
 if __name__ == "__main__":
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(script_dir, "../.."))
+    robomimic_relative_path = "../robomimic"
+    default_puma_demo_dir = os.path.abspath(
+        os.path.join(repo_root, robomimic_relative_path, "datasets", "puma_demo_dir")
+    )
+
     # Arguments
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -618,7 +660,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--directory",
         type=str,
-        default=os.path.join(suite.models.assets_root, "demonstrations_private"),
+        default=default_puma_demo_dir,
     )
     parser.add_argument("--environment", type=str, default="Lift")
     parser.add_argument(
@@ -1006,6 +1048,7 @@ if __name__ == "__main__":
         "env_name": args.environment,
         "robots": args.robots,
         "controller_configs": controller_config,
+        "recorded_files": _dataset_recording_metadata(args.puma_dataset),
     }
 
     # Check if we're using a multi-armed environment and use env_configuration argument if so

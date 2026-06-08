@@ -28,6 +28,8 @@ import numpy as np
 
 import robosuite as suite
 import robosuite.utils.transform_utils as T
+from robosuite.controllers.parts.controller_factory import load_part_controller_config
+from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
 from robosuite.utils.control_utils import orientation_error
 
 
@@ -247,13 +249,6 @@ def _go_to_homepose(env):
     env.reset()
 
 
-def _sleep_settle(settle_sec: float, label: str = "starting pose"):
-    if settle_sec <= 0:
-        return
-    print(f"Waiting {settle_sec:.1f}s for robot to reach {label}...", flush=True)
-    time.sleep(settle_sec)
-
-
 def _step_toward_target(
     env,
     robot,
@@ -350,7 +345,6 @@ def _prepare_episode_start(
     ref_frame: str,
     max_fr: int | None,
     realtime_from_delta_t: bool,
-    start_settle_sec: float,
 ):
     x_pos = trace["x_pos"]
     x_rot = trace["x_rot"]
@@ -372,7 +366,6 @@ def _prepare_episode_start(
         realtime_from_delta_t,
         gripper_action=ga,
     )
-    _sleep_settle(start_settle_sec, label="starting pose")
 
 
 def _get_osc_output_max(controller_configs: dict) -> np.ndarray:
@@ -441,18 +434,29 @@ def _resolve_action_ref_frame(env_info: dict, action_ref_frame: str) -> str:
     return "world"
 
 
-def _adapt_controller_configs_for_playback(controller_configs: dict | None, ref_frame: str) -> dict | None:
-    """
-    Align OSC input_ref_frame with playback semantics.
+def _episode_records_puma_ee_trace(env_info: dict) -> bool:
+    recorded_files = env_info.get("recorded_files", {})
+    if isinstance(recorded_files, dict) and "ee_state_*.pk" in recorded_files:
+        return True
+    # Backward compatibility: older puma_dataset episodes predate recorded_files metadata.
+    return True
 
-    Recorded trajectories are absolute world-frame poses. Using world-frame OSC goals
-    avoids compounding error from the controller origin frame (e.g. IIWA right_center
-    on link_1, which rotates with joint_1).
+
+def _controller_configs_for_playback(env_info: dict, robots, ref_frame: str) -> dict | None:
     """
-    if controller_configs is None:
-        return None
-    cfg = copy.deepcopy(controller_configs)
-    if ref_frame == "base":
+    Build the controller used to replay puma_dataset EE traces.
+
+    Collection may have used joint teleop, but ee_state_*.pk stores achieved
+    Cartesian EE poses. Playback therefore tracks them with OSC_POSE.
+    """
+    if _episode_records_puma_ee_trace(env_info):
+        primary_robot = robots[0] if isinstance(robots, list) else robots
+        arm_cfg = load_part_controller_config(default_controller="OSC_POSE")
+        arm_cfg["input_ref_frame"] = ref_frame
+        return refactor_composite_controller_config(arm_cfg, primary_robot, ["right"])
+
+    cfg = copy.deepcopy(env_info.get("controller_configs", None))
+    if cfg is None or ref_frame == "base":
         return cfg
     body_parts = cfg.get("body_parts")
     if not isinstance(body_parts, dict):
@@ -519,7 +523,6 @@ def playback_puma_episode(
     max_fr: int | None = 20,
     realtime_from_delta_t: bool = False,
     action_ref_frame: str = "auto",
-    start_settle_sec: float = 2.0,
     waypoint_max_steps: int = 8,
     waypoint_pos_tol: float = 0.01,
     waypoint_ori_tol: float = 0.25,
@@ -572,7 +575,6 @@ def playback_puma_episode(
             ref_frame,
             max_fr,
             realtime_from_delta_t,
-            start_settle_sec,
         )
 
         print(f"Replaying Episode: {ep_idx}")
@@ -674,12 +676,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--render_camera", type=str, default="frontview", help="Camera name for onscreen renderer")
     parser.add_argument(
-        "--start_settle_sec",
-        type=float,
-        default=0.1,
-        help="Seconds to wait after reaching the episode starting pose before replay begins",
-    )
-    parser.add_argument(
         "--waypoint_max_steps",
         type=int,
         default=8,
@@ -731,7 +727,7 @@ if __name__ == "__main__":
     env_name = env_info.get("env_name", "Lift")
     robots = env_info.get("robots", ["Panda"])
     ref_frame = _resolve_action_ref_frame(env_info, args.action_ref_frame)
-    controller_configs = _adapt_controller_configs_for_playback(env_info.get("controller_configs", None), ref_frame)
+    controller_configs = _controller_configs_for_playback(env_info, robots, ref_frame)
 
     env = suite.make(
         env_name,
@@ -752,7 +748,6 @@ if __name__ == "__main__":
         max_fr=args.max_fr,
         realtime_from_delta_t=args.realtime,
         action_ref_frame=args.action_ref_frame,
-        start_settle_sec=args.start_settle_sec,
         waypoint_max_steps=args.waypoint_max_steps,
         waypoint_pos_tol=args.waypoint_pos_tol,
         replay_ori_action_scale=args.replay_ori_action_scale,
